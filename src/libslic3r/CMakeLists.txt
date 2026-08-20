@@ -158,6 +158,8 @@ set(lisbslic3r_sources
     Format/objparser.hpp
     Format/STEP.cpp
     Format/STEP.hpp
+    BrepSlice.cpp
+    BrepSlice.hpp
     Format/STL.cpp
     Format/STL.hpp
     Format/SL1.hpp
@@ -623,6 +625,7 @@ set(OCCT_LIBS
 
 
 target_link_libraries(libslic3r
+    brepslicer
     noise::noise
     libnest2d
     admesh

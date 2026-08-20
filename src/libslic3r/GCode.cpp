@@ -37,6 +37,8 @@
 #include <boost/nowide/cstdio.hpp>
 #include <boost/nowide/cstdlib.hpp>
 
+#include <fstream>
+
 #include "SVG.hpp"
 
 #include <tbb/parallel_for.h>
@@ -1525,8 +1527,39 @@ std::vector<GCode::LayerToPrint> GCode::collect_layers_to_print(const PrintObjec
         // Check that there are extrusions on the very first layer. The case with empty
         // first layer may result in skirt/brim in the air and maybe other issues.
         if (layers_to_print.size() == 1u) {
-            if (!has_extrusions)
+            if (!has_extrusions) {
+                // #region agent log
+                try {
+                    std::ofstream f("E:/learning/slicer/BambuStudio/debug-9ef780.log", std::ios::app);
+                    if (f) {
+                        const Layer *ol = layer_to_print.object_layer;
+                        size_t surf = 0, peri = 0;
+                        double area = 0;
+                        bool empty_layer = true;
+                        if (ol) {
+                            empty_layer = ol->empty();
+                            for (const LayerRegion *lr : ol->regions()) {
+                                if (!lr) continue;
+                                peri += lr->perimeters.entities.size();
+                                for (const Surface &s : lr->slices.surfaces) {
+                                    ++surf;
+                                    area += unscaled(unscaled(s.expolygon.area()));
+                                }
+                            }
+                        }
+                        f << "{\"sessionId\":\"9ef780\",\"runId\":\"pre-fix\",\"hypothesisId\":\"G\","
+                             "\"location\":\"GCode.cpp:empty_initial\",\"message\":\"throw_empty_initial_layer\","
+                             "\"data\":{\"has_object_layer\":" << (ol ? "true" : "false")
+                          << ",\"layer_empty\":" << (empty_layer ? "true" : "false")
+                          << ",\"l0_surfaces\":" << surf << ",\"l0_area_mm2\":" << area
+                          << ",\"perimeter_entities\":" << peri
+                          << ",\"print_z\":" << (ol ? ol->print_z : -1.0)
+                          << "},\"timestamp\":0}\n";
+                    }
+                } catch (...) {}
+                // #endregion
                 throw Slic3r::SlicingError(_(L("The following object(s) have empty initial layer and can't be printed. Please cut the bottom or enable supports.")), object.id().id);
+            }
         }
 
         // In case there are extrusions on this layer, check there is a layer to lay it on.

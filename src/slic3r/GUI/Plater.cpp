@@ -21975,6 +21975,34 @@ void Plater::add_file()
     }
 }
 
+void Plater::add_step_file()
+{
+    BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << __LINE__ << " entry";
+    wxArrayString input_files;
+    wxGetApp().import_step(this, input_files);
+    if (input_files.empty())
+        return;
+
+    std::vector<fs::path> paths;
+    for (const auto &file : input_files)
+        paths.emplace_back(into_path(file));
+
+    std::string snapshot_label = "Import STEP: ";
+    snapshot_label += encode_path(paths.front().filename().string().c_str());
+    for (size_t i = 1; i < paths.size(); ++i) {
+        snapshot_label += ", ";
+        snapshot_label += encode_path(paths[i].filename().string().c_str());
+    }
+
+    Plater::TakeSnapshot snapshot(this, snapshot_label);
+    if (!load_files(paths, LoadStrategy::LoadModel, paths.size() > 1).empty()) {
+        if (get_project_name() == _L("Untitled") && !paths.empty())
+            p->set_project_filename(wxString::FromUTF8(paths[0].string()));
+        wxGetApp().mainframe->update_title();
+        statistics_burial_data(paths[0].string());
+    }
+}
+
 void Plater::update(bool conside_update_flag, bool force_background_processing_update)
 {
     if (is_new_project_and_check_state()) {

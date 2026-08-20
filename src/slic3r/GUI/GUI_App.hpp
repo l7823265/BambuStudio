@@ -517,6 +517,7 @@ public:
     void            keyboard_shortcuts();
     void            load_project(wxWindow *parent, wxString& input_file) const;
     void            import_model(wxWindow *parent, wxArrayString& input_files) const;
+    void            import_step(wxWindow *parent, wxArrayString& input_files) const;
     void            load_gcode(wxWindow* parent, wxString& input_file) const;
 
     wxString        transition_tridid(int trid_id, std::optional<int> total_extruder_count = std::nullopt) const;

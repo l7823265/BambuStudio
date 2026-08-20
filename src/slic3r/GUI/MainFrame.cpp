@@ -3005,6 +3005,9 @@ void MainFrame::init_menubar_as_editor()
             m_plater->add_file();
         } }, "menu_import", nullptr,
             [this](){return can_add_models(); }, this);
+        append_menu_item(import_menu, wxID_ANY, _L("导入STEP") + dots, _L("Import a STEP file and slice the B-rep (no mesh tessellation for slicing)"),
+            [this](wxCommandEvent&) { if (m_plater) m_plater->add_step_file(); }, "menu_import", nullptr,
+            [this](){return can_add_models(); }, this);
         append_menu_item(import_menu, wxID_ANY, _L("Import Configs") + dots /*+ "\tCtrl+I"*/, _L("Load configs"),
             [this](wxCommandEvent&) { load_config_file(); }, "menu_import", nullptr,
             [this](){return true; }, this);

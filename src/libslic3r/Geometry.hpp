@@ -10,6 +10,8 @@
 // Serialization through the Cereal library
 #include <cereal/access.hpp>
 
+#include <fstream>
+
 namespace Slic3r {
 
     namespace ClipperLib {
@@ -146,8 +148,63 @@ inline bool segments_intersect(
             // Certainly not collinear, then the segments intersect.
             return true;
         // If the first segment is collinear with the other, the other is collinear with the first segment.
-        assert((sign1.first == 0 && sign1.second == 0) == (sign2.first == 0 && sign2.second == 0));
-        if (sign1.first == 0 && sign1.second == 0) {
+        const bool col1 = (sign1.first == 0 && sign1.second == 0);
+        const bool col2 = (sign2.first == 0 && sign2.second == 0);
+        // int64 cross products can overflow on large / near-degenerate contours (common
+        // after OCCT tessellation of meter-scale STEP). Fall back to double when inconsistent.
+        if (col1 != col2) {
+            // #region agent log
+            {
+                static int dbg_n = 0;
+                if (dbg_n++ < 8) {
+                    try {
+                        std::ofstream f("E:/learning/slicer/BambuStudio/debug-9ef780.log", std::ios::app);
+                        if (f) {
+                            const auto amax = [](coord_t a, coord_t b) {
+                                return std::max(std::abs(a), std::abs(b));
+                            };
+                            const coord_t m = std::max({amax(ip1.x(), ip1.y()), amax(ip2.x(), ip2.y()),
+                                                        amax(jp1.x(), jp1.y()), amax(jp2.x(), jp2.y())});
+                            f << "{\"sessionId\":\"9ef780\",\"runId\":\"geom-assert\",\"hypothesisId\":\"G1\","
+                                 "\"location\":\"Geometry.hpp:segments_intersect\",\"message\":\"collinear_sign_mismatch\","
+                                 "\"data\":{\"col1\":" << (col1 ? "true" : "false")
+                              << ",\"col2\":" << (col2 ? "true" : "false")
+                              << ",\"sign1\":[" << sign1.first << "," << sign1.second
+                              << "],\"sign2\":[" << sign2.first << "," << sign2.second
+                              << "],\"ip1\":[" << ip1.x() << "," << ip1.y()
+                              << "],\"ip2\":[" << ip2.x() << "," << ip2.y()
+                              << "],\"jp1\":[" << jp1.x() << "," << jp1.y()
+                              << "],\"jp2\":[" << jp2.x() << "," << jp2.y()
+                              << "],\"max_abs_coord\":" << m
+                              << ",\"max_abs_mm\":" << (double(m) * SCALING_FACTOR)
+                              << "},\"timestamp\":0}\n";
+                        }
+                    } catch (...) {}
+                }
+            }
+            // #endregion
+            auto orient_d = [](const Slic3r::Point &a, const Slic3r::Point &b, const Slic3r::Point &c) -> int {
+                const double cross = double(b.x() - a.x()) * double(c.y() - a.y()) -
+                                     double(b.y() - a.y()) * double(c.x() - a.x());
+                return (cross > 0.0) ? 1 : ((cross < 0.0) ? -1 : 0);
+            };
+            const bool dcol1 = orient_d(ip1, ip2, jp1) == 0 && orient_d(ip1, ip2, jp2) == 0;
+            const bool dcol2 = orient_d(jp1, jp2, ip1) == 0 && orient_d(jp1, jp2, ip2) == 0;
+            if (dcol1 || dcol2) {
+                const Slic3r::Point &a = dcol1 ? ip1 : jp1;
+                const Slic3r::Point &b = dcol1 ? ip2 : jp2;
+                const Slic3r::Point &c = dcol1 ? jp1 : ip1;
+                const Slic3r::Point &d = dcol1 ? jp2 : ip2;
+                Slic3r::Point vi = b - a;
+                int axis = std::abs(vi.x()) > std::abs(vi.y()) ? 0 : 1;
+                coord_t i = a(axis), j = b(axis), k = c(axis), l = d(axis);
+                if (i > j) std::swap(i, j);
+                if (k > l) std::swap(k, l);
+                return (k >= i && k <= j) || (i >= k && i <= l);
+            }
+            return false;
+        }
+        if (col1) {
             // The segments are certainly collinear. Now verify whether they overlap.
             Slic3r::Point vi = ip2 - ip1;
             // Project both on the longer coordinate of vi.

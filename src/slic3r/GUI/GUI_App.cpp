@@ -4624,6 +4624,18 @@ void GUI_App::import_model(wxWindow *parent, wxArrayString& input_files) const
         dialog.GetPaths(input_files);
 }
 
+void GUI_App::import_step(wxWindow *parent, wxArrayString& input_files) const
+{
+    input_files.Clear();
+    wxFileDialog dialog(parent ? parent : GetTopWindow(),
+        _L("Choose one or more STEP files:"),
+        from_u8(app_config->get_last_dir()), "",
+        file_wildcards(FT_STEP), wxFD_OPEN | wxFD_MULTIPLE | wxFD_FILE_MUST_EXIST);
+
+    if (dialog.ShowModal() == wxID_OK)
+        dialog.GetPaths(input_files);
+}
+
 void GUI_App::load_gcode(wxWindow* parent, wxString& input_file) const
 {
     input_file.Clear();

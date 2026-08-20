@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -88,6 +89,8 @@ struct SliceOptions {
     double angular_tolerance = 1e-10;
     std::string svg_dir;           // directory: one SVG per layer
     std::string dxf_path;          // .dxf file, or directory of per-layer DXF
+    // Optional: called once per layer so hosts can cancel a long B-rep slice.
+    std::function<void()> throw_on_cancel;
 };
 
 struct VerifyReport {

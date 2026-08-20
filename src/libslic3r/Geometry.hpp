@@ -10,8 +10,6 @@
 // Serialization through the Cereal library
 #include <cereal/access.hpp>
 
-#include <fstream>
-
 namespace Slic3r {
 
     namespace ClipperLib {
@@ -153,36 +151,6 @@ inline bool segments_intersect(
         // int64 cross products can overflow on large / near-degenerate contours (common
         // after OCCT tessellation of meter-scale STEP). Fall back to double when inconsistent.
         if (col1 != col2) {
-            // #region agent log
-            {
-                static int dbg_n = 0;
-                if (dbg_n++ < 8) {
-                    try {
-                        std::ofstream f("E:/learning/slicer/BambuStudio/debug-9ef780.log", std::ios::app);
-                        if (f) {
-                            const auto amax = [](coord_t a, coord_t b) {
-                                return std::max(std::abs(a), std::abs(b));
-                            };
-                            const coord_t m = std::max({amax(ip1.x(), ip1.y()), amax(ip2.x(), ip2.y()),
-                                                        amax(jp1.x(), jp1.y()), amax(jp2.x(), jp2.y())});
-                            f << "{\"sessionId\":\"9ef780\",\"runId\":\"geom-assert\",\"hypothesisId\":\"G1\","
-                                 "\"location\":\"Geometry.hpp:segments_intersect\",\"message\":\"collinear_sign_mismatch\","
-                                 "\"data\":{\"col1\":" << (col1 ? "true" : "false")
-                              << ",\"col2\":" << (col2 ? "true" : "false")
-                              << ",\"sign1\":[" << sign1.first << "," << sign1.second
-                              << "],\"sign2\":[" << sign2.first << "," << sign2.second
-                              << "],\"ip1\":[" << ip1.x() << "," << ip1.y()
-                              << "],\"ip2\":[" << ip2.x() << "," << ip2.y()
-                              << "],\"jp1\":[" << jp1.x() << "," << jp1.y()
-                              << "],\"jp2\":[" << jp2.x() << "," << jp2.y()
-                              << "],\"max_abs_coord\":" << m
-                              << ",\"max_abs_mm\":" << (double(m) * SCALING_FACTOR)
-                              << "},\"timestamp\":0}\n";
-                        }
-                    } catch (...) {}
-                }
-            }
-            // #endregion
             auto orient_d = [](const Slic3r::Point &a, const Slic3r::Point &b, const Slic3r::Point &c) -> int {
                 const double cross = double(b.x() - a.x()) * double(c.y() - a.y()) -
                                      double(b.y() - a.y()) * double(c.x() - a.x());

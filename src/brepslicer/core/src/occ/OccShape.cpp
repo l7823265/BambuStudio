@@ -4,6 +4,7 @@
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepClass_FaceClassifier.hxx>
+#include <BRepTopAdaptor_FClass2d.hxx>
 #include <BRepTools_WireExplorer.hxx>
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
@@ -126,9 +127,17 @@ OccFace::OccFace(const TopoDS_Face& f) : face_(f) {}
 bool OccFace::empty() const { return face_.IsNull(); }
 BBox OccFace::bbox() const { return boxOf(face_); }
 
+const BRepAdaptor_Surface& OccFace::adaptor() const {
+    if (!adaptor_ready_) {
+        adaptor_.Initialize(face_, Standard_True);
+        adaptor_ready_ = true;
+    }
+    return adaptor_;
+}
+
 SurfaceData OccFace::surface() const {
     SurfaceData s;
-    BRepAdaptor_Surface ads(face_, Standard_True);
+    const BRepAdaptor_Surface& ads = adaptor();
     switch (ads.GetType()) {
     case GeomAbs_Plane: {
         s.kind = SurfaceKind::Plane;
@@ -186,7 +195,7 @@ PointClass OccFace::classify(const Vec3& p, double tol) const {
 
 UVBox OccFace::uvDomain() const {
     UVBox b;
-    BRepAdaptor_Surface ads(face_, Standard_True);
+    const BRepAdaptor_Surface& ads = adaptor();
     b.umin = ads.FirstUParameter();
     b.umax = ads.LastUParameter();
     b.vmin = ads.FirstVParameter();
@@ -199,16 +208,14 @@ UVBox OccFace::uvDomain() const {
 }
 
 Vec3 OccFace::evalUV(double u, double v) const {
-    BRepAdaptor_Surface ads(face_, Standard_True);
-    return v3(ads.Value(u, v));
+    return v3(adaptor().Value(u, v));
 }
 
 bool OccFace::derivUV(double u, double v, Vec3& Su, Vec3& Sv) const {
     try {
-        BRepAdaptor_Surface ads(face_, Standard_True);
         gp_Pnt p;
         gp_Vec du, dv;
-        ads.D1(u, v, p, du, dv);
+        adaptor().D1(u, v, p, du, dv);
         Su = {du.X(), du.Y(), du.Z()};
         Sv = {dv.X(), dv.Y(), dv.Z()};
         return true;
@@ -219,7 +226,7 @@ bool OccFace::derivUV(double u, double v, Vec3& Su, Vec3& Sv) const {
 
 bool OccFace::invertUV(const Vec3& p, double& u, double& v, double tol) const {
     try {
-        BRepAdaptor_Surface ads(face_, Standard_True);
+        const BRepAdaptor_Surface& ads = adaptor();
         Extrema_ExtPS ext(gp_Pnt(p.x, p.y, p.z), ads, ads.FirstUParameter(), ads.LastUParameter(),
                           ads.FirstVParameter(), ads.LastVParameter(), 1e-12, 1e-12);
         if (!ext.IsDone() || ext.NbExt() < 1) return false;
@@ -240,8 +247,11 @@ bool OccFace::invertUV(const Vec3& p, double& u, double& v, double tol) const {
 
 PointClass OccFace::classifyUV(double u, double v, double tol) const {
     try {
-        BRepClass_FaceClassifier fc(face_, gp_Pnt2d(u, v), tol);
-        switch (fc.State()) {
+        if (!class2d_ || std::abs(class2d_tol_ - tol) > 0.0) {
+            class2d_ = std::make_unique<BRepTopAdaptor_FClass2d>(face_, tol);
+            class2d_tol_ = tol;
+        }
+        switch (class2d_->Perform(gp_Pnt2d(u, v))) {
         case TopAbs_IN:
             return PointClass::In;
         case TopAbs_ON:

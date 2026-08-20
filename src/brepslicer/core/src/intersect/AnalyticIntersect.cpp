@@ -208,6 +208,73 @@ std::vector<RawSegment> trimCurveToFace(const AnalyticCurve& curve, const FaceRe
     if (!iface.face) return segs;
     const double matchTol = std::max(opt.tolerance, 10.0 * opt.geom_tolerance);
 
+    // A single midpoint is not enough for trimmed faces (e.g. booleaned spheres):
+    // the complete surface circle may pass one In sample while most of the arc is Out.
+    auto intervalOnFace = [&](double t0, double t1, bool closed) -> bool {
+        const int nSamp = closed ? 16 : 7;
+        for (int i = 1; i <= nSamp; ++i) {
+            const double t = t0 + (t1 - t0) * (double(i) / double(nSamp + 1));
+            if (!classifyInOrOnFace(*iface.face, evalCurve(curve, t), opt.tolerance))
+                return false;
+        }
+        return true;
+    };
+
+    auto pushInterval = [&](double t0, double t1, bool closed) {
+        if (!closed && arcLength(curve, t0, t1) <= opt.geom_tolerance) return;
+        if (!intervalOnFace(t0, t1, closed)) return;
+        RawSegment rs;
+        rs.geom = emitInterval(curve, t0, t1, frame);
+        rs.solid_id = iface.solid_id;
+        rs.shell_id = iface.shell_id;
+        rs.face_id = iface.face_id;
+        rs.closed_loop = closed;
+        segs.push_back(rs);
+    };
+
+    // When boundary hits are missing/incomplete, classify densely on the analytic curve
+    // and keep only contiguous In/On runs (respects OCC face trimming).
+    auto emitBySampling = [&]() {
+        if (!curve.periodic) return;
+        constexpr int N = 64;
+        std::vector<char> on(N, 0);
+        int onCount = 0;
+        for (int i = 0; i < N; ++i) {
+            const double t = curve.period * (double(i) / double(N));
+            on[i] = classifyInOrOnFace(*iface.face, evalCurve(curve, t), opt.tolerance) ? 1 : 0;
+            onCount += on[i];
+        }
+        if (onCount == 0) return;
+        if (onCount == N) {
+            pushInterval(0.0, curve.period, true);
+            return;
+        }
+        auto at = [&](int i) -> bool { return on[(i % N + N) % N] != 0; };
+        int start = -1;
+        for (int i = 0; i < N; ++i) {
+            if (at(i) && !at(i - 1)) {
+                start = i;
+                break;
+            }
+        }
+        if (start < 0) return;
+        int i = start;
+        do {
+            const int run0 = i;
+            int j = (i + 1) % N;
+            while (j != run0 && at(j))
+                j = (j + 1) % N;
+            double t0 = curve.period * (double(run0) / double(N));
+            double t1 = curve.period * (double(j) / double(N));
+            if (j <= run0)
+                t1 += curve.period;
+            pushInterval(t0, t1, false);
+            i = j;
+            while (i != start && !at(i))
+                i = (i + 1) % N;
+        } while (i != start);
+    };
+
     std::vector<double> ts;
     ts.reserve(hits.size());
     for (const Vec3& p : hits) {
@@ -230,38 +297,22 @@ std::vector<RawSegment> trimCurveToFace(const AnalyticCurve& curve, const FaceRe
         }
     }
 
-    auto emit = [&](double t0, double t1, bool closed) {
-        if (!closed && arcLength(curve, t0, t1) <= opt.geom_tolerance) return;
-        const Vec3 mid = evalCurve(curve, 0.5 * (t0 + t1));
-        if (!classifyInOrOnFace(*iface.face, mid, opt.tolerance)) return;
-        RawSegment rs;
-        rs.geom = emitInterval(curve, t0, t1, frame);
-        rs.solid_id = iface.solid_id;
-        rs.shell_id = iface.shell_id;
-        rs.face_id = iface.face_id;
-        rs.closed_loop = closed;
-        segs.push_back(rs);
-    };
+    // 0 or 1 snap is not enough to split a periodic intersection on a trimmed face.
+    if (curve.periodic && uniq.size() < 2) {
+        emitBySampling();
+        return segs;
+    }
 
     if (uniq.empty()) {
-        if (curve.periodic) {
-            const Vec3 sample = evalCurve(curve, 0.0);
-            if (classifyInOrOnFace(*iface.face, sample, opt.tolerance)) {
-                emit(0.0, curve.period, true);
-            }
-        }
+        if (curve.periodic) emitBySampling();
         return segs;
     }
 
     if (curve.periodic) {
-        if (uniq.size() == 1) {
-            emit(uniq[0], uniq[0] + curve.period, true);
-            return segs;
-        }
-        for (size_t i = 0; i + 1 < uniq.size(); ++i) emit(uniq[i], uniq[i + 1], false);
-        emit(uniq.back(), uniq.front() + curve.period, false);
+        for (size_t i = 0; i + 1 < uniq.size(); ++i) pushInterval(uniq[i], uniq[i + 1], false);
+        pushInterval(uniq.back(), uniq.front() + curve.period, false);
     } else {
-        for (size_t i = 0; i + 1 < uniq.size(); ++i) emit(uniq[i], uniq[i + 1], false);
+        for (size_t i = 0; i + 1 < uniq.size(); ++i) pushInterval(uniq[i], uniq[i + 1], false);
     }
     return segs;
 }

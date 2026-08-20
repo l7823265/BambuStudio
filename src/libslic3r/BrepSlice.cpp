@@ -4,6 +4,7 @@
 #include "Model.hpp"
 #include "Polygon.hpp"
 
+#include <brepslicer/Engine.h>
 #include <brepslicer/Geom.h>
 #include <brepslicer/Slicer.h>
 #include <intersect/BSplineFit.h>
@@ -14,30 +15,10 @@
 #include <boost/log/trivial.hpp>
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
-#include <fstream>
 #include <stdexcept>
-#include <sstream>
 
 namespace Slic3r {
-
-// #region agent log
-static void agent_dbg(const char *hypothesisId, const char *location, const char *message, const std::string &data_json)
-{
-    try {
-        std::ofstream f("E:/learning/slicer/BambuStudio/debug-9ef780.log", std::ios::app);
-        if (!f)
-            return;
-        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                            std::chrono::system_clock::now().time_since_epoch())
-                            .count();
-        f << "{\"sessionId\":\"9ef780\",\"runId\":\"brep-gcode\",\"hypothesisId\":\"" << hypothesisId
-          << "\",\"location\":\"" << location << "\",\"message\":\"" << message << "\",\"data\":" << data_json
-          << ",\"timestamp\":" << ms << "}\n";
-    } catch (...) {}
-}
-// #endregion
 
 static bool is_step_path(const std::string &path)
 {
@@ -222,15 +203,6 @@ static bool layer_has_geometry(const std::vector<ExPolygons> &layers)
     return false;
 }
 
-static bool bottom_layers_empty(const std::vector<ExPolygons> &layers, size_t count)
-{
-    count = std::min(count, layers.size());
-    for (size_t i = 0; i < count; ++i)
-        if (!layers[i].empty())
-            return false;
-    return count > 0;
-}
-
 bool slice_model_object_brep(const ModelObject           &object,
                              const Transform3d           &trafo_centered,
                              const std::vector<float>    &zs,
@@ -239,31 +211,18 @@ bool slice_model_object_brep(const ModelObject           &object,
                              std::vector<BrepVolumeSlices> &out_by_volume)
 {
     out_by_volume.clear();
-    if (zs.empty()) {
-        // #region agent log
-        agent_dbg("C", "BrepSlice.cpp:entry", "reject_empty_zs", "{\"reason\":\"zs_empty\"}");
-        // #endregion
+    if (zs.empty())
         return false;
-    }
 
     const std::string path = step_path_of(object);
-    if (path.empty()) {
-        // #region agent log
-        agent_dbg("C", "BrepSlice.cpp:entry", "reject_no_step_path", "{\"reason\":\"path_empty\"}");
-        // #endregion
+    if (path.empty())
         return false;
-    }
 
     for (const ModelVolume *v : object.volumes) {
         if (!v)
             continue;
-        if (v->is_negative_volume() || v->is_modifier() || v->is_mm_painted() || v->is_fuzzy_skin_facets_painted()) {
-            // #region agent log
-            agent_dbg("C", "BrepSlice.cpp:gates", "reject_modifier_or_paint",
-                      std::string("{\"volume\":\"") + v->name + "\"}");
-            // #endregion
+        if (v->is_negative_volume() || v->is_modifier() || v->is_mm_painted() || v->is_fuzzy_skin_facets_painted())
             return false;
-        }
     }
 
     std::vector<const ModelVolume *> parts;
@@ -272,12 +231,8 @@ bool slice_model_object_brep(const ModelObject           &object,
         if (v && v->is_model_part())
             parts.push_back(v);
     }
-    if (parts.empty()) {
-        // #region agent log
-        agent_dbg("C", "BrepSlice.cpp:gates", "reject_no_model_parts", "{}");
-        // #endregion
+    if (parts.empty())
         return false;
-    }
 
     const bool filter_by_solid = parts.size() > 1;
     double unit_scale = 1.0;
@@ -289,18 +244,10 @@ bool slice_model_object_brep(const ModelObject           &object,
         shape = brepslicer::readStep(path);
     } catch (const std::exception &e) {
         BOOST_LOG_TRIVIAL(warning) << "BrepSlicer failed to read STEP, falling back to mesh: " << e.what();
-        // #region agent log
-        agent_dbg("C", "BrepSlice.cpp:readStep", "read_exception",
-                  std::string("{\"what\":\"") + e.what() + "\"}");
-        // #endregion
         return false;
     }
-    if (!shape || shape->empty()) {
-        // #region agent log
-        agent_dbg("C", "BrepSlice.cpp:readStep", "empty_shape", "{}");
-        // #endregion
+    if (!shape || shape->empty())
         return false;
-    }
 
     const brepslicer::BBox bb = shape->bbox();
     const double step_dx = (bb.xmax - bb.xmin) * unit_scale;
@@ -320,21 +267,6 @@ bool slice_model_object_brep(const ModelObject           &object,
                                  std::min({std::abs(s.x()), std::abs(s.y()), std::abs(s.z())}));
     }
 
-    // #region agent log
-    {
-        std::ostringstream d;
-        d << "{\"parts\":" << parts.size()
-          << ",\"zs\":" << zs.size() << ",\"z0\":" << (zs.empty() ? 0.0 : zs.front())
-          << ",\"zLast\":" << (zs.empty() ? 0.0 : zs.back())
-          << ",\"bbox_zmin\":" << bb.zmin << ",\"bbox_zmax\":" << bb.zmax
-          << ",\"unit_scale\":" << unit_scale
-          << ",\"step_diag_mm\":" << step_diag << ",\"step_h_mm\":" << step_h
-          << ",\"print_h\":" << print_h << ",\"min_vol_scale\":" << min_vol_scale
-          << ",\"filter_by_solid\":" << (filter_by_solid ? "true" : "false") << "}";
-        agent_dbg("H1", "BrepSlice.cpp:start", "shape_and_zs", d.str());
-    }
-    // #endregion
-
     const bool oversized_step = step_diag > 400.0;                 // > typical print bed
     const bool heavily_scaled = min_vol_scale < 0.5;              // mesh shrunk vs CAD
     const bool print_vs_cad   = print_h > 1e-6 && step_h > 5.0 * print_h;
@@ -343,18 +275,25 @@ bool slice_model_object_brep(const ModelObject           &object,
             << "BrepSlicer: STEP too large for interactive B-rep (diag=" << step_diag
             << "mm, step_h=" << step_h << "mm, print_h=" << print_h
             << "mm, scale=" << min_vol_scale << "), falling back to scaled mesh";
-        // #region agent log
-        {
-            std::ostringstream d;
-            d << "{\"step_diag_mm\":" << step_diag << ",\"step_h_mm\":" << step_h
-              << ",\"print_h\":" << print_h << ",\"min_vol_scale\":" << min_vol_scale
-              << ",\"unit_scale\":" << unit_scale
-              << ",\"oversized\":true,\"heavily_scaled\":" << (heavily_scaled ? "true" : "false")
-              << ",\"print_vs_cad\":" << (print_vs_cad ? "true" : "false") << "}";
-            agent_dbg("H1", "BrepSlice.cpp:gates", "fallback_oversized_step", d.str());
-        }
-        // #endregion
         return false;
+    }
+
+    // Complexity gate: many faces × layers (× multi-part re-slice) can hang for a long time.
+    {
+        const auto faces = brepslicer::ShapeEngine::Kernel().exploreFaces(*shape);
+        size_t n_other = 0;
+        for (const auto &fr : faces) {
+            if (fr.face && fr.face->surface().kind == brepslicer::SurfaceKind::Other)
+                ++n_other;
+        }
+        const size_t work = faces.size() * zs.size() * std::max<size_t>(parts.size(), 1);
+        if (faces.size() > 1200 || work > 120000 || (n_other > 80 && zs.size() > 200)) {
+            BOOST_LOG_TRIVIAL(warning)
+                << "BrepSlicer: STEP too complex for interactive B-rep (faces=" << faces.size()
+                << ", other=" << n_other << ", layers=" << zs.size() << ", parts=" << parts.size()
+                << ", work=" << work << "), falling back to mesh";
+            return false;
+        }
     }
 
     out_by_volume.reserve(parts.size());
@@ -375,34 +314,13 @@ bool slice_model_object_brep(const ModelObject           &object,
 
         brepslicer::SliceOptions opt;
         opt.normal = {n_step.x(), n_step.y(), n_step.z()};
+        opt.throw_on_cancel = throw_on_cancel;
         opt.explicit_heights.reserve(zs.size());
         for (float z : zs)
             opt.explicit_heights.push_back((double(z) - t.z()) / nlen);
 
-        // #region agent log
-        {
-            std::ostringstream d;
-            d << "{\"volume\":\"" << part->name << "\",\"unit_scale\":" << part_us
-              << ",\"from_inches\":" << (part->source.is_converted_from_inches ? "true" : "false")
-              << ",\"from_meters\":" << (part->source.is_converted_from_meters ? "true" : "false")
-              << ",\"mesh_offset\":["
-              << part->source.mesh_offset.x() << "," << part->source.mesh_offset.y() << ","
-              << part->source.mesh_offset.z() << "],\"t\":[" << t.x() << "," << t.y() << "," << t.z()
-              << "],\"nlen\":" << nlen
-              << ",\"h0\":" << (opt.explicit_heights.empty() ? 0.0 : opt.explicit_heights.front())
-              << ",\"hLast\":" << (opt.explicit_heights.empty() ? 0.0 : opt.explicit_heights.back())
-              << ",\"n\":[" << n_step.x() << "," << n_step.y() << "," << n_step.z() << "]}";
-            agent_dbg("H2", "BrepSlice.cpp:heights", "mapped_heights", d.str());
-        }
-        // #endregion
-
         if (throw_on_cancel)
             throw_on_cancel();
-
-        // #region agent log
-        agent_dbg("H1", "BrepSlice.cpp:sliceShape", "sliceShape_begin",
-                  std::string("{\"layers\":") + std::to_string(zs.size()) + "}");
-        // #endregion
 
         brepslicer::SliceResult result;
         try {
@@ -414,60 +332,16 @@ bool slice_model_object_brep(const ModelObject           &object,
             result = brepslicer::sliceShape(shape, opt);
         } catch (const std::exception &e) {
             BOOST_LOG_TRIVIAL(warning) << "BrepSlicer failed, falling back to mesh: " << e.what();
-            // #region agent log
-            agent_dbg("C", "BrepSlice.cpp:sliceShape", "slice_exception",
-                      std::string("{\"what\":\"") + e.what() + "\"}");
-            // #endregion
             return false;
         }
-
-        // #region agent log
-        agent_dbg("H1", "BrepSlice.cpp:sliceShape", "sliceShape_end",
-                  std::string("{\"result_layers\":") + std::to_string(result.layers.size()) + "}");
-        // #endregion
 
         if (result.layers.size() != zs.size()) {
             BOOST_LOG_TRIVIAL(warning) << "BrepSlicer layer count mismatch (" << result.layers.size()
                                        << " vs " << zs.size() << "), falling back to mesh";
-            // #region agent log
-            {
-                std::ostringstream d;
-                d << "{\"got\":" << result.layers.size() << ",\"want\":" << zs.size() << "}";
-                agent_dbg("C", "BrepSlice.cpp:sliceShape", "layer_count_mismatch", d.str());
-            }
-            // #endregion
             return false;
         }
 
         const int solid_id = filter_by_solid ? int(part_idx) : -1;
-
-        // #region agent log
-        {
-            size_t raw0 = result.layers.empty() ? 0 : result.layers[0].contours.size();
-            size_t raw1 = result.layers.size() > 1 ? result.layers[1].contours.size() : 0;
-            size_t closed0 = 0, open0 = 0, closed1 = 0, open1 = 0;
-            auto tally = [](const brepslicer::Layer &L, size_t &cl, size_t &op) {
-                for (const brepslicer::Contour &c : L.contours) {
-                    if (c.closed) ++cl;
-                    else ++op;
-                }
-            };
-            if (!result.layers.empty())
-                tally(result.layers[0], closed0, open0);
-            if (result.layers.size() > 1)
-                tally(result.layers[1], closed1, open1);
-            size_t nonempty_raw = 0;
-            for (size_t i = 0; i < std::min<size_t>(result.layers.size(), 8); ++i)
-                if (!result.layers[i].contours.empty())
-                    ++nonempty_raw;
-            std::ostringstream d;
-            d << "{\"solid_id_filter\":" << solid_id << ",\"raw_contours_l0\":" << raw0
-              << ",\"raw_contours_l1\":" << raw1 << ",\"closed0\":" << closed0 << ",\"open0\":" << open0
-              << ",\"closed1\":" << closed1 << ",\"open1\":" << open1
-              << ",\"nonempty_raw_first8\":" << nonempty_raw << "}";
-            agent_dbg("D", "BrepSlice.cpp:raw", "raw_layer_contours", d.str());
-        }
-        // #endregion
 
         BrepVolumeSlices vs;
         vs.volume_id = part->id();
@@ -480,40 +354,9 @@ bool slice_model_object_brep(const ModelObject           &object,
                 any = true;
         }
 
-        // #region agent log
-        {
-            size_t poly0 = vs.layers.empty() ? 0 : vs.layers[0].size();
-            size_t poly1 = vs.layers.size() > 1 ? vs.layers[1].size() : 0;
-            size_t poly2 = vs.layers.size() > 2 ? vs.layers[2].size() : 0;
-            size_t nonempty = 0;
-            size_t first_nonempty = zs.size();
-            double area0 = 0;
-            for (size_t i = 0; i < vs.layers.size(); ++i) {
-                if (!vs.layers[i].empty()) {
-                    ++nonempty;
-                    if (first_nonempty == zs.size())
-                        first_nonempty = i;
-                }
-            }
-            if (!vs.layers.empty()) {
-                for (const ExPolygon &ex : vs.layers[0])
-                    area0 += unscaled(unscaled(ex.area()));
-            }
-            std::ostringstream d;
-            d << "{\"expoly_l0\":" << poly0 << ",\"expoly_l1\":" << poly1 << ",\"expoly_l2\":" << poly2
-              << ",\"nonempty_layers\":" << nonempty << ",\"first_nonempty\":" << first_nonempty
-              << ",\"l0_area_mm2\":" << area0
-              << ",\"bottom3_empty\":" << (bottom_layers_empty(vs.layers, 3) ? "true" : "false") << "}";
-            agent_dbg("B", "BrepSlice.cpp:convert", "converted_expolygons", d.str());
-        }
-        // #endregion
-
         if (!layer_has_geometry(vs.layers)) {
             BOOST_LOG_TRIVIAL(warning) << "BrepSlicer produced no contours for volume " << part->name
                                        << ", falling back to mesh";
-            // #region agent log
-            agent_dbg("B", "BrepSlice.cpp:convert", "fallback_no_geometry", "{}");
-            // #endregion
             return false;
         }
 
@@ -522,10 +365,6 @@ bool slice_model_object_brep(const ModelObject           &object,
         if ((vs.layers.empty() || vs.layers[0].empty()) && layer_has_geometry(vs.layers)) {
             BOOST_LOG_TRIVIAL(warning) << "BrepSlicer bottom layers empty for volume " << part->name
                                        << ", falling back to mesh";
-            // #region agent log
-            agent_dbg("A", "BrepSlice.cpp:convert", "fallback_bottom_empty",
-                      std::string("{\"first_nonempty_fix\":\"l0_empty\"}"));
-            // #endregion
             return false;
         }
 
@@ -538,16 +377,9 @@ bool slice_model_object_brep(const ModelObject           &object,
     if (!any) {
         BOOST_LOG_TRIVIAL(warning) << "BrepSlicer produced no contours, falling back to mesh";
         out_by_volume.clear();
-        // #region agent log
-        agent_dbg("B", "BrepSlice.cpp:exit", "fallback_any_false", "{}");
-        // #endregion
         return false;
     }
 
-    // #region agent log
-    agent_dbg("E", "BrepSlice.cpp:exit", "brep_success",
-              std::string("{\"volumes\":") + std::to_string(out_by_volume.size()) + "}");
-    // #endregion
     return true;
 }
 

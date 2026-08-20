@@ -1,4 +1,6 @@
+#include <brepslicer/Geom.h>
 #include <brepslicer/Slicer.h>
+#include <brepslicer/Engine.h>
 
 #include <contour/ContourAssembler.h>
 #include <geom/GeomUtil.h>
@@ -29,7 +31,8 @@ SliceResult sliceShape(const std::shared_ptr<IShape>& shape, const SliceOptions&
     const SliceFrame frame = makeSliceFrame(opt.normal);
 
     FaceIndex index;
-    index.build(ShapeEngine::Kernel().exploreFaces(*shape), shape->bbox());
+    auto all_faces = ShapeEngine::Kernel().exploreFaces(*shape);
+    index.build(std::move(all_faces), shape->bbox());
 
     double dmin = 0, dmax = 0;
     index.shapeRange(opt.normal, dmin, dmax);
@@ -58,7 +61,11 @@ SliceResult sliceShape(const std::shared_ptr<IShape>& shape, const SliceOptions&
 
     int total_bridge = 0;
     double max_bridge = 0;
-    for (double h : heights) {
+    const size_t nH = heights.size();
+    for (size_t li = 0; li < nH; ++li) {
+        if (opt.throw_on_cancel)
+            opt.throw_on_cancel();
+        const double h = heights[li];
         const Plane pln = makePlane(opt.normal, h);
         auto candidates = index.query(opt.normal, h, opt.tolerance);
         std::vector<RawSegment> segs;

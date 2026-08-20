@@ -13,7 +13,6 @@
 #include <boost/log/trivial.hpp>
 
 #include <algorithm>
-#include <fstream>
 #include <tbb/parallel_for.h>
 
 //! macro used to mark string used at localization, return same string
@@ -1162,51 +1161,8 @@ void PrintObject::slice_volumes()
             }
             if (objSliceByVolume.empty())
                 objSliceByVolume.clear();
-            // #region agent log
-            try {
-                std::ofstream f("E:/learning/slicer/BambuStudio/debug-9ef780.log", std::ios::app);
-                if (f) {
-                    size_t l0 = 0, assigned = 0;
-                    for (const auto &vs : objSliceByVolume) {
-                        if (!vs.slices.empty() && !vs.slices[0].empty())
-                            ++l0;
-                        for (const auto &s : vs.slices)
-                            if (!s.empty()) {
-                                ++assigned;
-                                break;
-                            }
-                    }
-                    f << "{\"sessionId\":\"9ef780\",\"runId\":\"pre-fix\",\"hypothesisId\":\"E\","
-                         "\"location\":\"PrintObjectSlice.cpp:assign\",\"message\":\"brep_assigned\","
-                         "\"data\":{\"volumes\":" << objSliceByVolume.size()
-                      << ",\"vols_with_l0\":" << l0 << ",\"vols_with_any\":" << assigned
-                      << "},\"timestamp\":0}\n";
-                }
-            } catch (...) {}
-            // #endregion
         }
         if (objSliceByVolume.empty()) {
-            // #region agent log
-            try {
-                std::ofstream f("E:/learning/slicer/BambuStudio/debug-9ef780.log", std::ios::app);
-                if (f) {
-                    const ModelObject *mo = this->model_object();
-                    const BoundingBoxf3 raw = mo->raw_mesh_bounding_box();
-                    const BoundingBoxf3 world = mo->bounding_box();
-                    double inst_scale = 1.0;
-                    if (!mo->instances.empty() && mo->instances.front()) {
-                        const Vec3d s = mo->instances.front()->get_scaling_factor();
-                        inst_scale = std::min({std::abs(s.x()), std::abs(s.y()), std::abs(s.z())});
-                    }
-                    f << "{\"sessionId\":\"9ef780\",\"runId\":\"geom-assert\",\"hypothesisId\":\"G2\","
-                         "\"location\":\"PrintObjectSlice.cpp:fallback\",\"message\":\"using_mesh_slice\","
-                         "\"data\":{\"raw_size\":[" << raw.size().x() << "," << raw.size().y() << "," << raw.size().z()
-                      << "],\"world_size\":[" << world.size().x() << "," << world.size().y() << "," << world.size().z()
-                      << "],\"inst_scale\":" << inst_scale
-                      << "},\"timestamp\":0}\n";
-                }
-            } catch (...) {}
-            // #endregion
             objSliceByVolume = slice_volumes_inner(
                 print->config(), this->config(), this->trafo_centered(),
                 this->model_object()->volumes, m_shared_regions->layer_ranges, slice_zs, throw_on_cancel_callback);
@@ -1232,30 +1188,6 @@ void PrintObject::slice_volumes()
             m_layers[layer_id]->regions()[region_id]->slices.append(std::move(by_layer[layer_id]), stInternal);
     }
     region_slices.clear();
-
-    // #region agent log
-    try {
-        std::ofstream f("E:/learning/slicer/BambuStudio/debug-9ef780.log", std::ios::app);
-        if (f && !m_layers.empty()) {
-            const Layer *L0 = m_layers.front();
-            size_t surf = 0;
-            double area = 0;
-            for (const LayerRegion *lr : L0->regions()) {
-                if (!lr) continue;
-                for (const Surface &s : lr->slices.surfaces) {
-                    ++surf;
-                    area += unscaled(unscaled(s.expolygon.area()));
-                }
-            }
-            f << "{\"sessionId\":\"9ef780\",\"runId\":\"pre-fix\",\"hypothesisId\":\"F\","
-                 "\"location\":\"PrintObjectSlice.cpp:after_regions\",\"message\":\"layer0_surfaces\","
-                 "\"data\":{\"layers\":" << m_layers.size()
-              << ",\"l0_surfaces\":" << surf << ",\"l0_area_mm2\":" << area
-              << ",\"l0_empty\":" << (L0->empty() ? "true" : "false")
-              << "},\"timestamp\":0}\n";
-        }
-    } catch (...) {}
-    // #endregion
 
     BOOST_LOG_TRIVIAL(debug) << "Slicing volumes - removing top empty layers";
     while (! m_layers.empty()) {

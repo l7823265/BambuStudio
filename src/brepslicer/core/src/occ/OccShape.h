@@ -5,6 +5,10 @@
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Shape.hxx>
+#include <BRepAdaptor_Surface.hxx>
+#include <BRepTopAdaptor_FClass2d.hxx>
+
+#include <memory>
 
 namespace brepslicer {
 
@@ -50,7 +54,13 @@ public:
     const TopoDS_Face& occFace() const { return face_; }
 
 private:
+    const BRepAdaptor_Surface& adaptor() const;
+
     TopoDS_Face face_;
+    mutable BRepAdaptor_Surface adaptor_;
+    mutable bool adaptor_ready_ = false;
+    mutable std::unique_ptr<BRepTopAdaptor_FClass2d> class2d_;
+    mutable double class2d_tol_ = -1.0;
 };
 
 const TopoDS_Shape& occShape(const IShape& s);

@@ -1,15 +1,26 @@
 # BrepSlicer (L0/L1/L2) — parametric B-rep slicing, linked into libslic3r.
-# Sources live in BrepSlicer-core (or BREPSLICER_CORE_DIR).
+# Default: in-tree core at src/brepslicer/core (vendored for fork builds).
+# Override with -DBREPSLICER_CORE_DIR=... if needed.
 
-get_filename_component(_brepslicer_default
+get_filename_component(_brepslicer_in_tree "${CMAKE_CURRENT_SOURCE_DIR}/core" ABSOLUTE)
+get_filename_component(_brepslicer_sibling
     "${CMAKE_SOURCE_DIR}/../BrepSlicer-core-L2-src-20260819" ABSOLUTE)
+
+if(EXISTS "${_brepslicer_in_tree}/include/brepslicer/Slicer.h")
+    set(_brepslicer_default "${_brepslicer_in_tree}")
+elseif(EXISTS "${_brepslicer_sibling}/include/brepslicer/Slicer.h")
+    set(_brepslicer_default "${_brepslicer_sibling}")
+else()
+    set(_brepslicer_default "${_brepslicer_in_tree}")
+endif()
+
 set(BREPSLICER_CORE_DIR "${_brepslicer_default}" CACHE PATH
     "Path to BrepSlicer-core (STEP B-rep slicer, L0/L1/L2)")
 
 if(NOT EXISTS "${BREPSLICER_CORE_DIR}/include/brepslicer/Slicer.h")
     message(FATAL_ERROR
         "BrepSlicer-core not found at ${BREPSLICER_CORE_DIR}. "
-        "Set -DBREPSLICER_CORE_DIR=... to the BrepSlicer checkout.")
+        "Expected vendored tree at src/brepslicer/core, or set -DBREPSLICER_CORE_DIR=...")
 endif()
 
 message(STATUS "BrepSlicer-core (L0/L1/L2): ${BREPSLICER_CORE_DIR}")

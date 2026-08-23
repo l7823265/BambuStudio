@@ -117,10 +117,10 @@ std::vector<UvPt> march(const IFace& face, const Plane& pln, const UVBox& dom, d
     if (!inOrOn(face.classifyUV(u, v, opt.tolerance))) return pts;
 
     const double stitch = opt.tolerance;
-    // Prefer larger 3D steps on large faces; FaceClassifier cost dominates tiny steps.
-    const double stepMax = std::min(1.0, std::max(2e-2, 0.02 * diag));
+    // Cap 3D step so chord sagitta h^2/(8r) stays under ~1e-4 for r on the order of 1 mm.
+    const double stepMax = std::min(0.012, std::max(5e-4, 0.001 * diag));
     double step = stepMax;
-    const double stepMin = std::max(opt.geom_tolerance * 10.0, 1e-3);
+    const double stepMin = std::max(opt.geom_tolerance * 10.0, 1e-5);
     const double u0 = u, v0 = v;
     const Vec3 p0 = face.evalUV(u, v);
     double arclen = 0;
@@ -128,7 +128,7 @@ std::vector<UvPt> march(const IFace& face, const Plane& pln, const UVBox& dom, d
     Vec3 Tprev{};
     bool haveT = false;
 
-    for (int k = 0; k < 250; ++k) {
+    for (int k = 0; k < 8000; ++k) {
         const Vec3 p = face.evalUV(u, v);
         if (pts.empty() || dist(p, pts.back().p) > 0.25 * stepMin) {
             if (!pts.empty()) arclen += dist(p, pts.back().p);
@@ -143,8 +143,6 @@ std::vector<UvPt> march(const IFace& face, const Plane& pln, const UVBox& dom, d
                 break;
             }
         }
-        // Open (boundary) traces should not wander forever on huge UV domains.
-        if (!try_close && arclen > 2.0 * std::max(diag, 1.0)) break;
 
         double du = 0, dv = 0;
         Vec3 T3;
@@ -176,9 +174,8 @@ std::vector<UvPt> march(const IFace& face, const Plane& pln, const UVBox& dom, d
                 advanced = true;
                 break;
             }
-            // Classify most steps; FClass2d is cached on OccFace.
-            const bool checkTrim = (k & 1) == 0 || border || attempt > 0;
-            if (checkTrim && !inOrOn(face.classifyUV(un, vn, opt.tolerance))) {
+            if (!inOrOn(face.classifyUV(un, vn, opt.tolerance))) {
+                // Backtrack to the trim / domain boundary.
                 double lo = 0, hi = 1;
                 double ub = u, vb = v;
                 for (int b = 0; b < 20; ++b) {
@@ -229,7 +226,8 @@ bool nearTrace(const UVBox& d, const std::vector<UvPt>& tr, double u, double v, 
     return false;
 }
 
-RawSegment toSegment(const FaceRecord& iface, const std::vector<UvPt>& tr, const SliceOptions& opt) {
+RawSegment toSegment(const FaceRecord& iface, const IFace& face, const Plane& pln, const UVBox& dom,
+                     const std::vector<UvPt>& tr, const SliceOptions& opt) {
     RawSegment rs;
     rs.solid_id = iface.solid_id;
     rs.shell_id = iface.shell_id;
@@ -254,6 +252,23 @@ RawSegment toSegment(const FaceRecord& iface, const std::vector<UvPt>& tr, const
     const bool closed = dist(pts.front(), pts.back()) <= opt.tolerance && pts.size() >= 4;
     rs.closed_loop = closed;
 
+    auto trueErr = [&](const Segment& geom) {
+        std::vector<Vec3> spl;
+        const int ns = std::max(96, static_cast<int>(geom.ctrl_pts.size()));
+        bsplineSample(geom, ns, spl);
+        double e = 0;
+        int hits = 0;
+        for (const Vec3& p : spl) {
+            double u = 0, v = 0;
+            if (!face.invertUV(p, u, v, opt.tolerance)) continue;
+            bool crit = false;
+            newton(face, pln, dom, u, v, opt.geom_tolerance, crit);
+            e = std::max(e, dist(p, face.evalUV(u, v)));
+            ++hits;
+        }
+        return (hits > 0) ? e : geom.fit_error;
+    };
+
     rs.geom = fitCubicBSpline(pts, closed, opt.tolerance);
     if (rs.geom.ctrl_pts.size() < 4) {
         rs.geom.type = SegmentType::Line;
@@ -262,10 +277,13 @@ RawSegment toSegment(const FaceRecord& iface, const std::vector<UvPt>& tr, const
         rs.closed_loop = false;
         return rs;
     }
-    // March points already lie on the surface; skip expensive invertUV true-error sampling.
-    if (rs.geom.fit_error > opt.tolerance) {
+    double te = trueErr(rs.geom);
+    if (te > opt.tolerance) {
+        // 3D cubics through on-surface points leave the surface; stay on the march chords.
         rs.geom = cubicFromPolyline(pts, closed);
+        te = trueErr(rs.geom);
     }
+    rs.geom.fit_error = std::max(rs.geom.fit_error, te);
     return rs;
 }
 
@@ -282,24 +300,24 @@ std::vector<RawSegment> intersectNurbsFaceWithPlane(const FaceRecord& iface, con
     const double du = std::max(1e-16, dom.umax - dom.umin);
     const double dv = std::max(1e-16, dom.vmax - dom.vmin);
     const BBox bb = face.bbox();
+    double dmin = 0, dmax = 0;
+    if (bb.valid) aabbRangeAlong(bb, pln.n, dmin, dmax);
     const double diag = bb.valid ? std::hypot(bb.xmax - bb.xmin, std::hypot(bb.ymax - bb.ymin,
                                                                             bb.zmax - bb.zmin))
                                  : 1.0;
 
     std::vector<Seed> seeds;
-    int n_seeds_bound = 0;
-    int n_seeds_grid = 0;
 
     auto addSeed = [&](double u, double v, bool boundary) {
         bool crit = false;
         if (!newton(face, pln, dom, u, v, opt.geom_tolerance, crit)) return;
         if (!inOrOn(face.classifyUV(u, v, opt.tolerance))) return;
+        const Vec3 p = face.evalUV(u, v);
+        if (!inOrOn(face.classify(p, opt.tolerance))) return;
         for (const Seed& s : seeds) {
             if (uvDist(dom, u, v, s.u, s.v) < 1e-4 * (du + dv)) return;
         }
         seeds.push_back({u, v, boundary, false});
-        if (boundary) ++n_seeds_bound;
-        else ++n_seeds_grid;
     };
 
     for (const Vec3& p : boundary3d) {
@@ -307,80 +325,48 @@ std::vector<RawSegment> intersectNurbsFaceWithPlane(const FaceRecord& iface, con
         if (face.invertUV(p, u, v, opt.tolerance)) addSeed(u, v, true);
     }
 
-    const int N = 16;
-    // Coarse probe first: AABB false-positives used to pay for a full dense evalUV grid
-    // even when f never changes sign.
-    const int Nc = 8;
-    std::vector<double> Fc((Nc + 1) * (Nc + 1));
-    auto atc = [&](int i, int j) -> double& { return Fc[i * (Nc + 1) + j]; };
-    bool coarseHit = false;
-    int nearPlane = 0;
-    const int nCoarse = (Nc + 1) * (Nc + 1);
-    const double nearTol = std::max(10.0 * opt.tolerance, 1e-3);
-    for (int i = 0; i <= Nc; ++i) {
-        for (int j = 0; j <= Nc; ++j) {
-            const double u = dom.umin + du * (static_cast<double>(i) / Nc);
-            const double v = dom.vmin + dv * (static_cast<double>(j) / Nc);
-            atc(i, j) = fval(face, pln, u, v);
-            if (std::abs(atc(i, j)) <= nearTol) ++nearPlane;
-            if (std::abs(atc(i, j)) <= opt.tolerance) coarseHit = true;
+    const int N = 32;
+    std::vector<double> F((N + 1) * (N + 1));
+    auto at = [&](int i, int j) -> double& { return F[i * (N + 1) + j]; };
+    for (int i = 0; i <= N; ++i) {
+        for (int j = 0; j <= N; ++j) {
+            const double u = dom.umin + du * (static_cast<double>(i) / N);
+            const double v = dom.vmin + dv * (static_cast<double>(j) / N);
+            at(i, j) = fval(face, pln, u, v);
         }
     }
-    // Nearly coplanar NURBS×plane: prefer boundary hits only.
-    const bool nearlyCoplanar = nearPlane * 5 >= nCoarse * 3;  // >=60% samples near plane
-    if (!nearlyCoplanar && !coarseHit) {
-        for (int i = 0; i <= Nc && !coarseHit; ++i) {
-            for (int j = 0; j <= Nc && !coarseHit; ++j) {
-                if (i < Nc && atc(i, j) * atc(i + 1, j) < 0 &&
-                    std::max(std::abs(atc(i, j)), std::abs(atc(i + 1, j))) > opt.tolerance)
-                    coarseHit = true;
-                if (j < Nc && atc(i, j) * atc(i, j + 1) < 0 &&
-                    std::max(std::abs(atc(i, j)), std::abs(atc(i, j + 1))) > opt.tolerance)
-                    coarseHit = true;
-            }
-        }
-    } else if (nearlyCoplanar) {
-        coarseHit = false;
-    }
-
-    // If trim-boundary already provides plane hits, skip the dense UV seed grid.
-    if (coarseHit && n_seeds_bound >= 2) coarseHit = false;
-
-    if (coarseHit) {
-        std::vector<double> F((N + 1) * (N + 1));
-        auto at = [&](int i, int j) -> double& { return F[i * (N + 1) + j]; };
-        for (int i = 0; i <= N; ++i) {
-            for (int j = 0; j <= N; ++j) {
-                const double u = dom.umin + du * (static_cast<double>(i) / N);
-                const double v = dom.vmin + dv * (static_cast<double>(j) / N);
-                at(i, j) = fval(face, pln, u, v);
-            }
-        }
-        auto consider = [&](int i0, int j0, int i1, int j1) {
-            if (n_seeds_grid >= 8) return;
-            const double f0 = at(i0, j0);
-            const double f1 = at(i1, j1);
-            if (f0 * f1 > 0) return;
-            if (std::max(std::abs(f0), std::abs(f1)) <= opt.tolerance) return;
-            double a = 0, b = 1;
-            for (int k = 0; k < 18; ++k) {
-                const double m = 0.5 * (a + b);
-                const double u = dom.umin + du * ((i0 + m * (i1 - i0)) / N);
-                const double v = dom.vmin + dv * ((j0 + m * (j1 - j0)) / N);
-                const double fm = fval(face, pln, u, v);
-                if (f0 * fm <= 0) b = m;
-                else a = m;
-            }
+    auto consider = [&](int i0, int j0, int i1, int j1) {
+        const double f0 = at(i0, j0);
+        const double f1 = at(i1, j1);
+        if (f0 * f1 > 0 && std::abs(f0) > opt.tolerance && std::abs(f1) > opt.tolerance) return;
+        if (f0 * f1 > 0) return;
+        double a = 0, b = 1;
+        for (int k = 0; k < 18; ++k) {
             const double m = 0.5 * (a + b);
             const double u = dom.umin + du * ((i0 + m * (i1 - i0)) / N);
             const double v = dom.vmin + dv * ((j0 + m * (j1 - j0)) / N);
-            addSeed(u, v, false);
-        };
-        for (int i = 0; i <= N; ++i) {
-            for (int j = 0; j <= N; ++j) {
-                if (i < N) consider(i, j, i + 1, j);
-                if (j < N) consider(i, j, i, j + 1);
-            }
+            const double fm = fval(face, pln, u, v);
+            if (f0 * fm <= 0) b = m;
+            else a = m;
+        }
+        const double m = 0.5 * (a + b);
+        const double u = dom.umin + du * ((i0 + m * (i1 - i0)) / N);
+        const double v = dom.vmin + dv * ((j0 + m * (j1 - j0)) / N);
+        const PointClass c0 = face.classifyUV(dom.umin + du * i0 / N, dom.vmin + dv * j0 / N,
+                                              opt.tolerance);
+        const PointClass c1 = face.classifyUV(dom.umin + du * i1 / N, dom.vmin + dv * j1 / N,
+                                              opt.tolerance);
+        if (!inOrOn(c0) && !inOrOn(c1)) return;
+        const double um = dom.umin + du * ((i0 + m * (i1 - i0)) / N);
+        const double vm = dom.vmin + dv * ((j0 + m * (j1 - j0)) / N);
+        if (!inOrOn(face.classifyUV(um, vm, opt.tolerance))) return;
+        if (!inOrOn(face.classify(face.evalUV(um, vm), opt.tolerance))) return;
+        addSeed(u, v, false);
+    };
+    for (int i = 0; i <= N; ++i) {
+        for (int j = 0; j <= N; ++j) {
+            if (i < N) consider(i, j, i + 1, j);
+            if (j < N) consider(i, j, i, j + 1);
         }
     }
 
@@ -421,8 +407,11 @@ std::vector<RawSegment> intersectNurbsFaceWithPlane(const FaceRecord& iface, con
     }
 
     for (const auto& tr : traces) {
-        segs.push_back(toSegment(iface, tr, opt));
+        RawSegment rs = toSegment(iface, face, pln, dom, tr, opt);
+        segs.push_back(std::move(rs));
     }
+    (void)dmin;
+    (void)dmax;
     return segs;
 }
 

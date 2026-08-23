@@ -16,7 +16,7 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE ${CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELE
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE ${CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE})
 
 if(MSVC)
-    include(cmake/msvc/occt750.cmake)
+    include(cmake/msvc/occt_bambu_deps.cmake)
     include(cmake/msvc/copy_bin.cmake)
     add_compile_options(/utf-8 /MP /EHsc /bigobj)
     add_compile_definitions(NOMINMAX _CRT_SECURE_NO_WARNINGS _USE_MATH_DEFINES)
@@ -36,6 +36,7 @@ add_library(brepslicer_algo STATIC
     src/intersect/AnalyticIntersect.cpp
     src/intersect/BSplineFit.cpp
     src/intersect/UvMarch.cpp
+    src/intersect/UvMatch.cpp
     src/contour/ContourAssembler.cpp
     src/slicer/Slicer.cpp
     src/verify/SliceVerify.cpp
@@ -69,7 +70,7 @@ function(brepslicer_add_app target)
     target_include_directories(${target} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     add_dependencies(${target} _ready_bin)
     set_property(TARGET ${target} PROPERTY VS_DEBUGGER_ENVIRONMENT "PATH=${OCCT750_BINARY_DIR};%PATH%")
-    set_property(TARGET ${target} PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/_bin/x64_Debug")
+    set_property(TARGET ${target} PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/_bin/x64_Release")
 endfunction()
 
 brepslicer_add_app(brep_slice    apps/brep_slice/main.cpp)

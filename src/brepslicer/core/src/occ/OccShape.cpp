@@ -4,14 +4,15 @@
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepClass_FaceClassifier.hxx>
-#include <BRepTopAdaptor_FClass2d.hxx>
 #include <BRepTools_WireExplorer.hxx>
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
 #include <Extrema_ExtPS.hxx>
 #include <GeomAbs_CurveType.hxx>
 #include <GeomAbs_SurfaceType.hxx>
+#include <Geom_BSplineSurface.hxx>
 #include <Standard_Failure.hxx>
+#include <TColStd_Array1OfReal.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopAbs.hxx>
 #include <TopoDS.hxx>
@@ -127,17 +128,9 @@ OccFace::OccFace(const TopoDS_Face& f) : face_(f) {}
 bool OccFace::empty() const { return face_.IsNull(); }
 BBox OccFace::bbox() const { return boxOf(face_); }
 
-const BRepAdaptor_Surface& OccFace::adaptor() const {
-    if (!adaptor_ready_) {
-        adaptor_.Initialize(face_, Standard_True);
-        adaptor_ready_ = true;
-    }
-    return adaptor_;
-}
-
 SurfaceData OccFace::surface() const {
     SurfaceData s;
-    const BRepAdaptor_Surface& ads = adaptor();
+    BRepAdaptor_Surface ads(face_, Standard_True);
     switch (ads.GetType()) {
     case GeomAbs_Plane: {
         s.kind = SurfaceKind::Plane;
@@ -195,7 +188,7 @@ PointClass OccFace::classify(const Vec3& p, double tol) const {
 
 UVBox OccFace::uvDomain() const {
     UVBox b;
-    const BRepAdaptor_Surface& ads = adaptor();
+    BRepAdaptor_Surface ads(face_, Standard_True);
     b.umin = ads.FirstUParameter();
     b.umax = ads.LastUParameter();
     b.vmin = ads.FirstVParameter();
@@ -208,14 +201,16 @@ UVBox OccFace::uvDomain() const {
 }
 
 Vec3 OccFace::evalUV(double u, double v) const {
-    return v3(adaptor().Value(u, v));
+    BRepAdaptor_Surface ads(face_, Standard_True);
+    return v3(ads.Value(u, v));
 }
 
 bool OccFace::derivUV(double u, double v, Vec3& Su, Vec3& Sv) const {
     try {
+        BRepAdaptor_Surface ads(face_, Standard_True);
         gp_Pnt p;
         gp_Vec du, dv;
-        adaptor().D1(u, v, p, du, dv);
+        ads.D1(u, v, p, du, dv);
         Su = {du.X(), du.Y(), du.Z()};
         Sv = {dv.X(), dv.Y(), dv.Z()};
         return true;
@@ -226,7 +221,7 @@ bool OccFace::derivUV(double u, double v, Vec3& Su, Vec3& Sv) const {
 
 bool OccFace::invertUV(const Vec3& p, double& u, double& v, double tol) const {
     try {
-        const BRepAdaptor_Surface& ads = adaptor();
+        BRepAdaptor_Surface ads(face_, Standard_True);
         Extrema_ExtPS ext(gp_Pnt(p.x, p.y, p.z), ads, ads.FirstUParameter(), ads.LastUParameter(),
                           ads.FirstVParameter(), ads.LastVParameter(), 1e-12, 1e-12);
         if (!ext.IsDone() || ext.NbExt() < 1) return false;
@@ -247,11 +242,8 @@ bool OccFace::invertUV(const Vec3& p, double& u, double& v, double tol) const {
 
 PointClass OccFace::classifyUV(double u, double v, double tol) const {
     try {
-        if (!class2d_ || std::abs(class2d_tol_ - tol) > 0.0) {
-            class2d_ = std::make_unique<BRepTopAdaptor_FClass2d>(face_, tol);
-            class2d_tol_ = tol;
-        }
-        switch (class2d_->Perform(gp_Pnt2d(u, v))) {
+        BRepClass_FaceClassifier fc(face_, gp_Pnt2d(u, v), tol);
+        switch (fc.State()) {
         case TopAbs_IN:
             return PointClass::In;
         case TopAbs_ON:
@@ -283,6 +275,30 @@ std::vector<std::vector<std::shared_ptr<IEdge>>> OccFace::wires() const {
         out.push_back(std::move(wire));
     }
     return out;
+}
+
+void OccFace::uvIsoSamples(std::vector<double>& u_samples, std::vector<double>& v_samples) const {
+    u_samples.clear();
+    v_samples.clear();
+    BRepAdaptor_Surface ads(face_, Standard_True);
+    auto uniqueKnots = [](const TColStd_Array1OfReal& knots, double lo, double hi,
+                          std::vector<double>& out) {
+        out.clear();
+        out.push_back(lo);
+        for (int i = knots.Lower(); i <= knots.Upper(); ++i) {
+            const double k = knots.Value(i);
+            if (k <= lo + 1e-14 || k >= hi - 1e-14) continue;
+            if (out.empty() || std::abs(out.back() - k) > 1e-12) out.push_back(k);
+        }
+        if (out.empty() || std::abs(out.back() - hi) > 1e-12) out.push_back(hi);
+    };
+    if (ads.GetType() == GeomAbs_BSplineSurface) {
+        const Handle(Geom_BSplineSurface) bs = ads.BSpline();
+        if (!bs.IsNull()) {
+            uniqueKnots(bs->UKnots(), ads.FirstUParameter(), ads.LastUParameter(), u_samples);
+            uniqueKnots(bs->VKnots(), ads.FirstVParameter(), ads.LastVParameter(), v_samples);
+        }
+    }
 }
 
 const TopoDS_Shape& occShape(const IShape& s) {

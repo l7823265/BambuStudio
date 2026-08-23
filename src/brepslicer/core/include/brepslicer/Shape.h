@@ -36,6 +36,9 @@ public:
     virtual std::vector<std::shared_ptr<IEdge>> edges() const = 0;
     // Wires in explorer order; each edge already carries CurveData.reversed.
     virtual std::vector<std::vector<std::shared_ptr<IEdge>>> wires() const = 0;
+    // Preferred iso-parameter samples (e.g. unique NURBS knots). Empty → caller densifies.
+    virtual void uvIsoSamples(std::vector<double>& /*u_samples*/,
+                              std::vector<double>& /*v_samples*/) const {}
 };
 
 class ISolid : public IShape {

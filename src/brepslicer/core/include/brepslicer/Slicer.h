@@ -22,6 +22,11 @@ void writeAllLayerSvg(const SliceResult& result, const std::string& dir);
 
 void writeDxfFile(const SliceResult& result, const std::string& path);
 void writeAllLayerDxf(const SliceResult& result, const std::string& path);
+void writeOpenLayerDxf(const SliceResult& result,
+                       const std::vector<std::pair<double, int>>& unclosed_layers,
+                       const std::string& dir);
+void writeSeedDxfFile(const SliceResult& result, const std::string& path);
+void writeSeedSummaryFile(const SliceResult& result, const std::string& path);
 
 VerifyReport verifySlice(const SliceResult& result);
 VerifyReport verifyAgainstRef(const SliceResult& result, const std::shared_ptr<IShape>& shape);

@@ -97,23 +97,9 @@ void writeLayerSvg(const Layer& layer, const Vec3& normal, const std::string& pa
             const Vec2 pe = xy(s.end);
             if (s.type == SegmentType::Arc) {
                 const double large = (std::abs(s.sweep) > kPi) ? 1 : 0;
-                // scale(1,-1) below mirrors Y and reverses visual sweep direction, so
-                // invert the SVG sweep-flag or minor arcs render as open major "C"s.
-                const double sweepFlag = (s.sweep < 0) ? 1 : 0;
+                const double sweepFlag = (s.sweep < 0) ? 0 : 1;
                 f << " A " << s.radius << " " << s.radius << " 0 " << large << " " << sweepFlag
                   << " " << pe.x << " " << pe.y;
-            } else if (s.type == SegmentType::Ellipse) {
-                // Approximate ellipse as polyline in the slice frame (rare in SVG preview).
-                const int n = 32;
-                const Vec3 maj = (length(s.major_axis) > 1e-15) ? normalized(s.major_axis) : frame.x;
-                const Vec3 minv = cross(s.normal, maj);
-                for (int i = 1; i <= n; ++i) {
-                    const double t = s.start_angle + s.sweep * (static_cast<double>(i) / n);
-                    const Vec3 p = s.center + maj * (s.radius * std::cos(t)) +
-                                   minv * (s.radius_b * std::sin(t));
-                    const Vec2 q = xy(p);
-                    f << " L " << q.x << " " << q.y;
-                }
             } else if (s.type == SegmentType::BSpline) {
                 std::vector<Vec3> smp;
                 bsplineSample(s, 48, smp);

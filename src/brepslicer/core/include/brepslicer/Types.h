@@ -58,6 +58,37 @@ struct Layer {
     std::vector<Contour> contours;
 };
 
+enum class SeedPointKind { Raw, Kept, Dropped };
+
+struct SeedPoint {
+    Vec3 p;
+    SeedPointKind kind = SeedPointKind::Raw;
+    int face_id = -1;
+};
+
+struct FaceSeedStats {
+    int face_id = -1;
+    int raw = 0;          // iso hits after seeding
+    int iso_hits = 0;     // iso curves with >= 1 hit
+    int chains = 0;       // chains after chainHits
+    int chain_pts = 0;    // points in chains before filter
+    int kept = 0;         // points in chains kept after trim filter
+    int kept_chains = 0;  // chains kept after trim filter
+    int dropped = 0;      // points dropped by trim filter
+    int segments = 0;     // fitted segments output
+    int neighbor_splits = 0;  // chain clips by neighbor-face signed distance
+    bool uvmarch_fallback = false;
+};
+
+struct SeedLayer {
+    double z = 0;
+    std::vector<SeedPoint> points;
+    std::vector<std::vector<Vec3>> seed_chains;  // after seeding, before trim filter
+    std::vector<std::vector<Vec3>> kept_chains;  // after trim filter
+    std::vector<int> kept_chain_face_ids;        // parallel to kept_chains
+    std::vector<FaceSeedStats> face_stats;
+};
+
 struct TopologyEvent {
     double z = 0;
     std::string event;
@@ -68,11 +99,15 @@ struct TopologyEvent {
     bool has_point = false;
 };
 
+struct FaceRecord;
+
 struct SliceResult {
     std::string unit = "mm";
     double tolerance = 1e-4;
+    double stitch_tolerance = 0.01;
     Vec3 normal{0, 0, 1};
     std::vector<Layer> layers;
+    std::vector<SeedLayer> seed_layers;
     std::vector<TopologyEvent> topology_events;
     std::vector<std::string> logs;
 };
@@ -85,11 +120,22 @@ struct SliceOptions {
     int layer_count = -1;
     std::vector<double> explicit_heights;
     double tolerance = 1e-4;       // endpoint stitch / JSON
+    double stitch_tolerance = 0.01; // merge segment endpoints when gap < this (mm)
     double geom_tolerance = 1e-9;  // analytic equality (L1 circle)
     double angular_tolerance = 1e-10;
     std::string svg_dir;           // directory: one SVG per layer
     std::string dxf_path;          // .dxf file, or directory of per-layer DXF
-    // Optional: called once per layer so hosts can cancel a long B-rep slice.
+    std::string open_dxf_dir;      // debug: DXF for layers with open contour(s) only
+    std::string seed_dxf_path;     // debug: UVMatch seed points / chains
+    // Per-layer UVMatch seed recorder (set by slicer during intersect).
+    mutable SeedLayer* seed_out = nullptr;
+    // Per-layer per-face seed counts (always set during slice).
+    mutable std::vector<FaceSeedStats>* face_seed_stats = nullptr;
+    // All faces hit by the current slice plane (for neighbor signed-distance clip).
+    mutable const std::vector<const FaceRecord*>* plane_faces = nullptr;
+    // Per-face chain/constraint audit lines (debug; set when --seed-dxf is used).
+    mutable std::vector<std::string>* constraint_audit = nullptr;
+    // Optional: called once per layer so hosts (BambuStudio) can cancel a long B-rep slice.
     std::function<void()> throw_on_cancel;
 };
 

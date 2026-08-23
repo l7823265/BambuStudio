@@ -3,20 +3,22 @@
   "configurePresets": [
     {
       "name": "msvc-2019-x64",
-      "displayName": "MSVC 2019 x64 (matches OCCT vc14)",
+      "displayName": "MSVC 2019 x64 (Bambu OCCT Release)",
       "generator": "Visual Studio 16 2019",
       "architecture": "x64",
-      "binaryDir": "${sourceDir}/build",
-      "cacheVariables": {
-        "OCCT750_DIR": "D:/lib/opencascade-7.5.0/build_vs2019/win64"
-      }
+      "binaryDir": "${sourceDir}/build"
     }
   ],
   "buildPresets": [
     {
+      "name": "release",
+      "configurePreset": "msvc-2019-x64",
+      "configuration": "Release"
+    },
+    {
       "name": "debug",
       "configurePreset": "msvc-2019-x64",
-      "configuration": "Debug"
+      "configuration": "Release"
     }
   ]
 }

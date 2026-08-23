@@ -25,4 +25,7 @@ std::vector<RawSegment> intersectFaceWithPlane(const FaceRecord& iface,
                                                const SliceFrame& frame,
                                                const SliceOptions& opt);
 
+// Drop subset/overlapping analytic arcs on the same slice circle (multi-face sphere).
+void dedupeAnalyticArcs(std::vector<RawSegment>& segs, double tol);
+
 }  // namespace brepslicer

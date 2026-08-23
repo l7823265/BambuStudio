@@ -10,7 +10,12 @@ struct AssembleStats {
     int bridged = 0;
     double max_bridge = 0;
     int open_leftover = 0;
+    int spurious_closed_removed = 0;
 };
+
+// After edge stitching: drop closed loops whose vertices coincide with an open contour's
+// endpoints (self-loop pocket next to a real open cap arc).
+void fixContours(std::vector<Contour>& contours, double gap_tol = 0.001);
 
 Layer assembleLayer(double z,
                     std::vector<RawSegment> segs,

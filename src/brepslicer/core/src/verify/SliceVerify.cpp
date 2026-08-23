@@ -10,6 +10,19 @@
 
 namespace brepslicer {
 
+namespace {
+
+Vec3 segStart(const Segment& s) {
+    if (s.type == SegmentType::BSpline && !s.ctrl_pts.empty()) return s.ctrl_pts.front();
+    return s.start;
+}
+Vec3 segEnd(const Segment& s) {
+    if (s.type == SegmentType::BSpline && !s.ctrl_pts.empty()) return s.ctrl_pts.back();
+    return s.end;
+}
+
+}  // namespace
+
 double contourLength(const Contour& c) {
     double L = 0;
     for (const Segment& s : c.segments) {
@@ -55,16 +68,17 @@ VerifyReport verifySlice(const SliceResult& result) {
                 continue;
             }
             if (c.closed) {
-                const double gap = dist(c.segments.front().start, c.segments.back().end);
-                if (gap > result.tolerance) {
+                const double gap = dist(segStart(c.segments.front()), segEnd(c.segments.back()));
+                const double tol = std::max(result.tolerance, result.stitch_tolerance);
+                if (gap > tol) {
                     std::ostringstream os;
                     os << "layer " << li << " contour " << ci << " not closed, gap=" << gap;
                     r.errors.push_back(os.str());
                     r.ok = false;
                 }
                 for (size_t i = 0; i + 1 < c.segments.size(); ++i) {
-                    const double g = dist(c.segments[i].end, c.segments[i + 1].start);
-                    if (g > result.tolerance) {
+                    const double g = dist(segEnd(c.segments[i]), segStart(c.segments[i + 1]));
+                    if (g > tol) {
                         std::ostringstream os;
                         os << "layer " << li << " contour " << ci << " broken at seg " << i;
                         r.errors.push_back(os.str());

@@ -3,7 +3,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <limits>
+#include <map>
 #include <utility>
 
 namespace brepslicer {
@@ -25,6 +27,15 @@ void reverseContour(Contour& c) {
 }
 
 Vec2 to2(const Vec3& p, const SliceFrame& frame) { return frame.toXY(p); }
+
+Vec3 segStart(const Segment& s) {
+    if (s.type == SegmentType::BSpline && !s.ctrl_pts.empty()) return s.ctrl_pts.front();
+    return s.start;
+}
+Vec3 segEnd(const Segment& s) {
+    if (s.type == SegmentType::BSpline && !s.ctrl_pts.empty()) return s.ctrl_pts.back();
+    return s.end;
+}
 
 std::vector<Vec2> discretize(const Contour& c, const SliceFrame& frame) {
     std::vector<Vec2> pts;
@@ -107,6 +118,151 @@ Contour makeContour(std::vector<Segment> segs, int solid, int shell, bool coplan
     return c;
 }
 
+bool sameCircleSeg(const Segment& a, const Segment& b, double tol) {
+    if (a.type != SegmentType::Arc || b.type != SegmentType::Arc) return false;
+    return dist(a.center, b.center) <= tol && std::abs(a.radius - b.radius) <= tol;
+}
+
+bool isAngleWrap(double a) {
+    a = wrapTwoPi(a);
+    return a < 1e-3 || a > kTwoPi - 1e-3;
+}
+
+// Merge arcs split at 0/360 (e.g. after analytic intersection snap) into one arc.
+void coalesceWrapSplitArcs(Contour& c, double tol) {
+    if (c.segments.size() < 2) return;
+    std::vector<Segment> out;
+    out.reserve(c.segments.size());
+    for (const Segment& s : c.segments) {
+        if (!out.empty() && s.type == SegmentType::Arc && out.back().type == SegmentType::Arc &&
+            sameCircleSeg(out.back(), s, tol) && dist(segEnd(out.back()), segStart(s)) <= tol) {
+            const double tail = out.back().start_angle + out.back().sweep;
+            if (isAngleWrap(tail) || isAngleWrap(s.start_angle)) {
+                const bool sameDir =
+                    (out.back().sweep >= 0.0 && s.sweep >= 0.0) ||
+                    (out.back().sweep < 0.0 && s.sweep < 0.0);
+                if (sameDir) {
+                    out.back().sweep += s.sweep;
+                    out.back().end = s.end;
+                    continue;
+                }
+            }
+        }
+        out.push_back(s);
+    }
+    c.segments = std::move(out);
+}
+
+void nestAndOrientContours(std::vector<Contour>& contours, const SliceFrame& frame) {
+    const int n = static_cast<int>(contours.size());
+    if (n == 0) return;
+    std::vector<int> parent(n, -1);
+    std::vector<double> absArea(n, 0);
+    for (int i = 0; i < n; ++i) {
+        absArea[i] = std::abs(contourSignedArea(contours[i], frame));
+    }
+    for (int i = 0; i < n; ++i) {
+        if (!contours[i].closed || contours[i].segments.empty()) continue;
+        const Vec3 probe = segmentMid(contours[i].segments.front(), frame);
+        int best = -1;
+        double bestA = std::numeric_limits<double>::max();
+        for (int j = 0; j < n; ++j) {
+            if (i == j || !contours[j].closed) continue;
+            if (absArea[j] <= absArea[i] + 1e-18) continue;
+            if (contourContainsPoint(contours[j], probe, frame) && absArea[j] < bestA) {
+                bestA = absArea[j];
+                best = j;
+            }
+        }
+        parent[i] = best;
+    }
+
+    for (int i = 0; i < n; ++i) {
+        int d = 0;
+        int p = parent[i];
+        int guard = 0;
+        while (p >= 0 && guard++ < n + 2) {
+            ++d;
+            p = parent[p];
+        }
+        const double a = contourSignedArea(contours[i], frame);
+        const bool wantCcw = (d % 2 == 0);
+        if (wantCcw && a < 0) reverseContour(contours[i]);
+        if (!wantCcw && a > 0) reverseContour(contours[i]);
+        contours[i].orientation = (d % 2 == 0) ? "outer" : "inner";
+        if (parent[i] >= 0) contours[i].parent = parent[i];
+    }
+}
+
+void setSegStart(Segment& s, const Vec3& p) {
+    s.start = p;
+    if (s.type == SegmentType::BSpline && !s.ctrl_pts.empty()) s.ctrl_pts.front() = p;
+}
+
+void setSegEnd(Segment& s, const Vec3& p) {
+    s.end = p;
+    if (s.type == SegmentType::BSpline && !s.ctrl_pts.empty()) s.ctrl_pts.back() = p;
+}
+
+void weldChainJoints(std::vector<Segment>& chain, double tol) {
+    if (chain.size() < 2) return;
+    for (size_t i = 0; i + 1 < chain.size(); ++i) {
+        Segment& a = chain[i];
+        Segment& b = chain[i + 1];
+        const Vec3 tail = segEnd(a);
+        const Vec3 head = segStart(b);
+        if (dist(tail, head) > tol) continue;
+        const Vec3 m{(tail.x + head.x) * 0.5, (tail.y + head.y) * 0.5, (tail.z + head.z) * 0.5};
+        setSegEnd(a, m);
+        setSegStart(b, m);
+    }
+    const Vec3 tail = segEnd(chain.back());
+    const Vec3 head = segStart(chain.front());
+    if (dist(tail, head) <= tol) {
+        const Vec3 m{(tail.x + head.x) * 0.5, (tail.y + head.y) * 0.5, (tail.z + head.z) * 0.5};
+        setSegEnd(chain.back(), m);
+        setSegStart(chain.front(), m);
+    }
+}
+
+bool tryMergeOpen(Contour& a, Contour& b, double stitch) {
+    if (a.closed || b.closed || a.solid_id != b.solid_id) return false;
+    auto match = [&](const Vec3& x, const Vec3& y) { return dist(x, y) <= stitch; };
+
+    const Vec3 aHead = segStart(a.segments.front());
+    const Vec3 aTail = segEnd(a.segments.back());
+    const Vec3 bHead = segStart(b.segments.front());
+    const Vec3 bTail = segEnd(b.segments.back());
+
+    if (match(aTail, bHead)) {
+        a.segments.insert(a.segments.end(), b.segments.begin(), b.segments.end());
+        a.coplanar = a.coplanar || b.coplanar;
+        b.segments.clear();
+        return true;
+    }
+    if (match(aTail, bTail)) {
+        reverseContour(b);
+        a.segments.insert(a.segments.end(), b.segments.begin(), b.segments.end());
+        a.coplanar = a.coplanar || b.coplanar;
+        b.segments.clear();
+        return true;
+    }
+    if (match(aHead, bTail)) {
+        a.segments.insert(a.segments.begin(), b.segments.begin(), b.segments.end());
+        a.coplanar = a.coplanar || b.coplanar;
+        b.segments.clear();
+        return true;
+    }
+    if (match(aHead, bHead)) {
+        reverseContour(b);
+        a.segments.insert(a.segments.begin(), b.segments.begin(), b.segments.end());
+        a.coplanar = a.coplanar || b.coplanar;
+        b.segments.clear();
+        return true;
+    }
+    return false;
+}
+
 }  // namespace
 
 Vec3 contourStart(const Contour& c) {
@@ -157,15 +313,32 @@ Layer assembleLayer(double z, std::vector<RawSegment> segs, const SliceFrame& fr
         if (segs[i].degenerate) used[i] = 1;
     }
 
-    const double stitch = opt.tolerance;
+    const double stitch = std::max(opt.tolerance, opt.stitch_tolerance);
+    auto sameArcFrame = [&](const Segment& a, const Segment& b) {
+        if (a.type != SegmentType::Arc || b.type != SegmentType::Arc) return true;
+        return dist(a.center, b.center) <= stitch && std::abs(a.radius - b.radius) <= stitch;
+    };
+    auto onBothCircles = [&](const Vec3& p, const Segment& a, const Segment& b) {
+        if (a.type != SegmentType::Arc || b.type != SegmentType::Arc) return true;
+        if (sameArcFrame(a, b)) return true;
+        const double tol = stitch * 10.0;
+        return std::abs(dist(p, a.center) - a.radius) <= tol &&
+               std::abs(dist(p, b.center) - b.radius) <= tol;
+    };
     auto sameGeom = [&](const Segment& a, const Segment& b) {
-        return (dist(a.start, b.start) <= stitch && dist(a.end, b.end) <= stitch) ||
-               (dist(a.start, b.end) <= stitch && dist(a.end, b.start) <= stitch);
+        const bool fwd = dist(segStart(a), segStart(b)) <= stitch && dist(segEnd(a), segEnd(b)) <= stitch;
+        const bool rev = dist(segStart(a), segEnd(b)) <= stitch && dist(segEnd(a), segStart(b)) <= stitch;
+        if (!fwd && !rev) return false;
+        return sameArcFrame(a, b);
+    };
+    auto canStitch = [&](const Segment& from, const Vec3& joint, const Segment& to) {
+        return onBothCircles(joint, from, to);
     };
     for (size_t i = 0; i < segs.size(); ++i) {
         if (used[i]) continue;
         for (size_t j = i + 1; j < segs.size(); ++j) {
             if (used[j] || segs[j].closed_loop) continue;
+            if (segs[i].solid_id != segs[j].solid_id) continue;
             if (sameGeom(segs[i].geom, segs[j].geom)) {
                 segs[i].coplanar = segs[i].coplanar || segs[j].coplanar;
                 used[j] = 1;  // shared-edge / non-manifold
@@ -197,19 +370,19 @@ Layer assembleLayer(double z, std::vector<RawSegment> segs, const SliceFrame& fr
         bool grew = true;
         while (grew) {
             grew = false;
-            const Vec3 head = chain.front().start;
-            const Vec3 tail = chain.back().end;
+            const Vec3 head = segStart(chain.front());
+            const Vec3 tail = segEnd(chain.back());
             for (size_t j = 0; j < segs.size(); ++j) {
                 if (used[j] || !sameBody(seed, j)) continue;
                 Segment cand = segs[j].geom;
-                if (match(tail, cand.start)) {
+                if (match(tail, segStart(cand)) && canStitch(chain.back(), tail, cand)) {
                     chain.push_back(cand);
                     used[j] = 1;
                     coplanar = coplanar || segs[j].coplanar;
                     grew = true;
                     break;
                 }
-                if (match(tail, cand.end)) {
+                if (match(tail, segEnd(cand)) && canStitch(chain.back(), tail, cand)) {
                     reverseSegment(cand);
                     chain.push_back(cand);
                     used[j] = 1;
@@ -217,14 +390,14 @@ Layer assembleLayer(double z, std::vector<RawSegment> segs, const SliceFrame& fr
                     grew = true;
                     break;
                 }
-                if (match(head, cand.end)) {
+                if (match(head, segEnd(cand)) && canStitch(cand, head, chain.front())) {
                     chain.insert(chain.begin(), cand);
                     used[j] = 1;
                     coplanar = coplanar || segs[j].coplanar;
                     grew = true;
                     break;
                 }
-                if (match(head, cand.start)) {
+                if (match(head, segStart(cand)) && canStitch(cand, head, chain.front())) {
                     reverseSegment(cand);
                     chain.insert(chain.begin(), cand);
                     used[j] = 1;
@@ -235,14 +408,18 @@ Layer assembleLayer(double z, std::vector<RawSegment> segs, const SliceFrame& fr
             }
         }
 
-        const bool closed = !chain.empty() && dist(chain.front().start, chain.back().end) <= stitch;
+        weldChainJoints(chain, stitch);
+
+        const bool closed =
+            !chain.empty() && dist(segStart(chain.front()), segEnd(chain.back())) <= stitch;
         if (!closed) {
-            const double gap = chain.empty() ? 0.0 : dist(chain.front().start, chain.back().end);
-            if (gap > 0.0 && gap <= stitch * 10.0 && gap < 1e-3) {
+            const double gap =
+                chain.empty() ? 0.0 : dist(segStart(chain.front()), segEnd(chain.back()));
+            if (gap > 0.0 && gap <= std::max(stitch * 10.0, 0.5)) {
                 Segment line;
                 line.type = SegmentType::Line;
-                line.start = chain.back().end;
-                line.end = chain.front().start;
+                line.start = segEnd(chain.back());
+                line.end = segStart(chain.front());
                 chain.push_back(line);
                 ++stats.bridged;
                 stats.max_bridge = std::max(stats.max_bridge, gap);
@@ -256,45 +433,45 @@ Layer assembleLayer(double z, std::vector<RawSegment> segs, const SliceFrame& fr
         }
     }
 
-    // Nesting + orientation (viewed along +n: outer CCW, inner CW).
-    const int n = static_cast<int>(contours.size());
-    std::vector<int> parent(n, -1);
-    std::vector<double> absArea(n, 0);
-    for (int i = 0; i < n; ++i) {
-        absArea[i] = std::abs(contourSignedArea(contours[i], frame));
-    }
-    for (int i = 0; i < n; ++i) {
-        if (!contours[i].closed || contours[i].segments.empty()) continue;
-        const Vec3 probe = segmentMid(contours[i].segments.front(), frame);
-        int best = -1;
-        double bestA = std::numeric_limits<double>::max();
-        for (int j = 0; j < n; ++j) {
-            if (i == j || !contours[j].closed) continue;
-            if (absArea[j] <= absArea[i] + 1e-18) continue;
-            if (contourContainsPoint(contours[j], probe, frame) && absArea[j] < bestA) {
-                bestA = absArea[j];
-                best = j;
+    const double mergeTol = std::max(stitch * 10.0, 1e-3);
+    bool merged = true;
+    while (merged) {
+        merged = false;
+        for (size_t i = 0; i < contours.size(); ++i) {
+            if (contours[i].segments.empty()) continue;
+            for (size_t j = i + 1; j < contours.size(); ++j) {
+                if (contours[j].segments.empty()) continue;
+                if (tryMergeOpen(contours[i], contours[j], mergeTol)) {
+                    const bool closed =
+                        dist(segStart(contours[i].segments.front()),
+                             segEnd(contours[i].segments.back())) <= stitch;
+                    contours[i].closed = closed;
+                    merged = true;
+                    break;
+                }
             }
+            if (merged) break;
         }
-        parent[i] = best;
     }
+    contours.erase(std::remove_if(contours.begin(), contours.end(),
+                                  [](const Contour& c) { return c.segments.empty(); }),
+                   contours.end());
 
-    std::vector<int> depth(n, 0);
-    for (int i = 0; i < n; ++i) {
-        int d = 0;
-        int p = parent[i];
-        int guard = 0;
-        while (p >= 0 && guard++ < n + 2) {
-            ++d;
-            p = parent[p];
+    for (Contour& c : contours) weldChainJoints(c.segments, stitch);
+
+    for (Contour& c : contours) coalesceWrapSplitArcs(c, stitch);
+
+    // Nesting + orientation per solid (multi-solid STEP: each body has its own outer/inner tree).
+    std::map<int, std::vector<Contour>> bySolid;
+    for (Contour& c : contours) bySolid[c.solid_id].push_back(std::move(c));
+    contours.clear();
+    for (auto& kv : bySolid) {
+        nestAndOrientContours(kv.second, frame);
+        const int base = static_cast<int>(contours.size());
+        for (Contour& c : kv.second) {
+            if (c.parent) *c.parent += base;
+            contours.push_back(std::move(c));
         }
-        depth[i] = d;
-        const double a = contourSignedArea(contours[i], frame);
-        const bool wantCcw = (d % 2 == 0);
-        if (wantCcw && a < 0) reverseContour(contours[i]);
-        if (!wantCcw && a > 0) reverseContour(contours[i]);
-        contours[i].orientation = (d % 2 == 0) ? "outer" : "inner";
-        if (parent[i] >= 0) contours[i].parent = parent[i];
     }
 
     layer.contours = std::move(contours);

@@ -1,4 +1,4 @@
-# BrepSlicer (L0/L1/L2) — parametric B-rep slicing, linked into libslic3r.
+# BrepSlicer (L0/L1/L2-v3) — parametric B-rep slicing, linked into libslic3r.
 # Default: in-tree core at src/brepslicer/core (vendored for fork builds).
 # Override with -DBREPSLICER_CORE_DIR=... if needed.
 
@@ -38,6 +38,7 @@ set(brepslicer_sources
     ${BREPSLICER_CORE_DIR}/src/intersect/AnalyticIntersect.cpp
     ${BREPSLICER_CORE_DIR}/src/intersect/BSplineFit.cpp
     ${BREPSLICER_CORE_DIR}/src/intersect/UvMarch.cpp
+    ${BREPSLICER_CORE_DIR}/src/intersect/UvMatch.cpp
     ${BREPSLICER_CORE_DIR}/src/contour/ContourAssembler.cpp
     ${BREPSLICER_CORE_DIR}/src/slicer/Slicer.cpp
     ${BREPSLICER_CORE_DIR}/src/verify/SliceVerify.cpp

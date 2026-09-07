@@ -22,6 +22,9 @@
 
 #include "libslic3r/Utils.hpp"
 
+#include <chrono>
+#include <fstream>
+
 //#define DEBUG_FILES
 
 #ifdef DEBUG_FILES
@@ -891,11 +894,45 @@ public:
     PerimeterDistancer(const Layer *layer)
     {
         ExPolygons layer_outline = layer->lslices;
-        for (const ExPolygon &island : layer_outline) {
-            assert(island.contour.is_counter_clockwise());
+        // #region agent log
+        {
+            int cw_contour = 0, ccw_hole = 0;
+            for (const ExPolygon &island : layer_outline) {
+                if (!island.contour.is_counter_clockwise())
+                    ++cw_contour;
+                for (const Polygon &hole : island.holes) {
+                    if (!hole.is_clockwise())
+                        ++ccw_hole;
+                }
+            }
+            if (cw_contour > 0 || ccw_hole > 0) {
+                try {
+                    std::ofstream f("E:/learning/slicer/BambuStudio/debug-9ef780.log", std::ios::app);
+                    if (f) {
+                        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                            std::chrono::system_clock::now().time_since_epoch())
+                                            .count();
+                        f << "{\"sessionId\":\"9ef780\",\"runId\":\"seam-ccw\",\"hypothesisId\":\"H5\""
+                          << ",\"location\":\"SeamPlacer.cpp:PerimeterDistancer\""
+                          << ",\"message\":\"lslices_winding\""
+                          << ",\"data\":{\"print_z\":" << layer->print_z
+                          << ",\"islands\":" << layer_outline.size()
+                          << ",\"cw_contour\":" << cw_contour
+                          << ",\"ccw_hole\":" << ccw_hole << "},\"timestamp\":" << ms << "}\n";
+                    }
+                } catch (...) {}
+            }
+        }
+        // #endregion
+        for (ExPolygon &island : layer_outline) {
+            // Normalize in case post-slice offsets flipped winding (supports / XY
+            // compensation / region merge). Prefer fixing at B-rep convert; this is
+            // a last-chance guard so SeamPlacer can finish.
+            island.contour.make_counter_clockwise();
+            for (Polygon &hole : island.holes)
+                hole.make_clockwise();
             for (const auto &line : island.contour.lines()) { lines.emplace_back(unscale(line.a), unscale(line.b)); }
             for (const Polygon &hole : island.holes) {
-                assert(hole.is_clockwise());
                 for (const auto &line : hole.lines()) { lines.emplace_back(unscale(line.a), unscale(line.b)); }
             }
         }

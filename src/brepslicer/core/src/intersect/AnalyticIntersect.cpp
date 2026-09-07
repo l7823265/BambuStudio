@@ -1,12 +1,14 @@
 #include <intersect/AnalyticIntersect.h>
 #include <intersect/BSplineFit.h>
 #include <intersect/QuadricPlane.h>
+#include <intersect/UvMarch.h>
 #include <intersect/UvMatch.h>
 #include <geom/GeomUtil.h>
 
 #include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <sstream>
 #include <vector>
 
 namespace brepslicer {
@@ -468,7 +470,16 @@ std::vector<RawSegment> trimCurveToFace(const AnalyticCurve& curve, const FaceRe
             if (std::abs(span) < kMinOpenArc) return false;
         }
         const Vec3 mid = evalCurve(curve, 0.5 * (t0 + t1));
-        if (!classifyInOrOnFace(*iface.face, mid, opt.tolerance)) return false;
+        if (!classifyInOrOnFace(*iface.face, mid, opt.tolerance)) {
+            if (curve.kind == AnalyticCurve::Circle && opt.constraint_audit) {
+                std::ostringstream os;
+                os << "arc_trim_reject face=" << iface.face_id << " t0=" << t0 << " t1=" << t1
+                   << " mid=(" << mid.x << "," << mid.y << "," << mid.z << ")"
+                   << " class=" << static_cast<int>(iface.face->classify(mid, opt.tolerance));
+                opt.constraint_audit->push_back(os.str());
+            }
+            return false;
+        }
         RawSegment rs;
         rs.geom = emitInterval(curve, t0, t1, frame);
         rs.solid_id = iface.solid_id;
@@ -476,6 +487,13 @@ std::vector<RawSegment> trimCurveToFace(const AnalyticCurve& curve, const FaceRe
         rs.face_id = iface.face_id;
         rs.closed_loop = closed;
         segs.push_back(rs);
+        if (curve.kind == AnalyticCurve::Circle && opt.constraint_audit) {
+            std::ostringstream os;
+            os << "arc_trim_keep face=" << iface.face_id << " t0=" << t0 << " t1=" << t1
+               << " sweep=" << (t1 - t0) << " start=(" << rs.geom.start.x << "," << rs.geom.start.y
+               << ") end=(" << rs.geom.end.x << "," << rs.geom.end.y << ")";
+            opt.constraint_audit->push_back(os.str());
+        }
         return true;
     };
 
@@ -490,6 +508,12 @@ std::vector<RawSegment> trimCurveToFace(const AnalyticCurve& curve, const FaceRe
     }
 
     if (curve.periodic) {
+        if (curve.kind == AnalyticCurve::Circle && opt.constraint_audit) {
+            std::ostringstream os;
+            os << "arc_trim_hits face=" << iface.face_id << " n=" << uniq.size();
+            for (double t : uniq) os << " " << t;
+            opt.constraint_audit->push_back(os.str());
+        }
         if (uniq.size() == 1) {
             tryEmit(uniq[0], uniq[0] + curve.period, true);
             return segs;
@@ -504,6 +528,15 @@ std::vector<RawSegment> trimCurveToFace(const AnalyticCurve& curve, const FaceRe
             };
             const bool inInt = midInside(t0, t1);
             const bool inWrap = midInside(t1, t1 + (curve.period - gapInt));
+            if (opt.constraint_audit) {
+                std::ostringstream os;
+                os << "arc_trim_2hit face=" << iface.face_id << " gapInt=" << gapInt
+                   << " inInt=" << inInt << " inWrap=" << inWrap
+                   << " keep=" << ((inInt && inWrap)
+                                       ? (gapInt <= 0.5 * curve.period ? "short_int" : "short_wrap")
+                                       : (inInt ? "int" : (inWrap ? "wrap" : "none")));
+                opt.constraint_audit->push_back(os.str());
+            }
             if (inInt && inWrap) {
                 if (gapInt <= 0.5 * curve.period) {
                     tryEmit(t0, t1, false);
@@ -580,6 +613,9 @@ std::vector<RawSegment> intersectFaceWithPlane(const FaceRecord& iface, const Pl
         faceBoundaryHits(*iface.face, pln, opt.angular_tolerance, opt.tolerance);
 
     if (surf.kind == SurfaceKind::Other) {
+        if (opt.nurbs_method == NurbsMethod::UvMarch) {
+            return intersectNurbsFaceWithPlane(iface, pln, frame, opt, boundary);
+        }
         return intersectNurbsFaceWithPlaneUvMatch(iface, pln, frame, opt, boundary);
     }
 

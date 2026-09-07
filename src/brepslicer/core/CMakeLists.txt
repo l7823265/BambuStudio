@@ -76,5 +76,6 @@ endfunction()
 brepslicer_add_app(brep_slice    apps/brep_slice/main.cpp)
 brepslicer_add_app(slice_verify  apps/slice_verify/main.cpp)
 brepslicer_add_app(slice_selftest apps/selftest/main.cpp)
+brepslicer_add_app(export_faces  apps/export_faces/main.cpp)
 
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT brep_slice)

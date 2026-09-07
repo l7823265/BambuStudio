@@ -44,7 +44,8 @@ class ISectionRef {
 public:
     virtual ~ISectionRef() = default;
     virtual double sectionLength(const IShape& shape, const Plane& plane) = 0;
-    // Drop face-trim segments whose interior samples are not on the OCCT section wire.
+    // L2 B-splines only: keep portions near the OCCT section wire (split inliers).
+    // L1 line / arc / ellipse are not clipped against OCC Section.
     virtual void clipSegmentsToSection(const IShape& shape, const Plane& plane,
                                        std::vector<RawSegment>& segs, double tol) = 0;
 };

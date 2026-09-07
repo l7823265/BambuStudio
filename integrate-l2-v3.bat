@@ -1,7 +1,7 @@
 @echo off
 setlocal
 set ZIP=%~1
-if "%ZIP%"=="" set ZIP=E:\learning\slicer\BrepSlicer-core-L2-v3\dist\BrepSlicer-core-L2-src-20260823.zip
+if "%ZIP%"=="" set ZIP=E:\learning\slicer\BrepSlicer-core-L2-v3\dist\BrepSlicer-core-L2-src-20260907.zip
 set SRC=E:\learning\slicer\BrepSlicer-core-L2-v3
 set EXTRACT=%SRC%\_zip_extract
 set CORE=E:\learning\slicer\BambuStudio\src\brepslicer\core
@@ -44,11 +44,11 @@ if not exist "%SRC%\src\intersect\UvMatch.cpp" (
   exit /b 4
 )
 
-rem --- purge non-code from sibling L2-v3 ---
-for %%D in (third_party _zip_extract dist example out_uvmatch build _bin scripts) do (
+rem --- purge non-code from sibling L2-v3 (keep dist/ for release zips) ---
+for %%D in (third_party _zip_extract example out_uvmatch build _bin scripts apps) do (
   if exist "%SRC%\%%D" rmdir /s /q "%SRC%\%%D"
 )
-del /q "%SRC%\*.md" "%SRC%\PACKAGE.txt" "%SRC%\*.pdf" 2>nul
+del /q "%SRC%\*.md" "%SRC%\PACKAGE.txt" "%SRC%\*.pdf" "%SRC%\build.bat" 2>nul
 
 rem --- fresh code-only vendored core for Studio ---
 if exist "%CORE%" rmdir /s /q "%CORE%"

@@ -515,7 +515,7 @@ public:
     void reverse() override;
     bool is_set_speed_discontinuity_area() const { return this->role() == erExternalPerimeter || this->role() == erPerimeter || this->role() == erOverhangPerimeter; }
     const Point& first_point() const override { return this->paths.front().polyline.points.front(); }
-    const Point& last_point() const override { assert(this->first_point() == this->paths.back().polyline.points.back()); return this->first_point(); }
+    const Point& last_point() const override;
     Polygon polygon() const;
     double length() const override;
     bool split_at_vertex(const Point &point, const double scaled_epsilon = scaled<double>(0.001));

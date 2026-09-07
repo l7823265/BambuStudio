@@ -5,12 +5,14 @@
 #include <occ/OccShape.h>
 
 #include <BRepAlgoAPI_Section.hxx>
+#include <BRepAdaptor_Curve.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
-#include <BRepBuilderAPI_MakeVertex.hxx>
-#include <BRepExtrema_DistShapeShape.hxx>
 #include <BRepGProp.hxx>
+#include <GCPnts_UniformAbscissa.hxx>
 #include <GProp_GProps.hxx>
 #include <TopExp_Explorer.hxx>
+#include <TopoDS.hxx>
+#include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Pln.hxx>
@@ -34,44 +36,113 @@ TopoDS_Shape sectionShape(const IShape& shape, const Plane& plane) {
     return section.Shape();
 }
 
-Vec3 arcAt(const Segment& s, double t) {
-    const double a = s.start_angle + t * s.sweep;
-    Vec3 x = cross({0, 0, 1}, s.normal);
-    if (length(x) < 1e-12) x = cross({0, 1, 0}, s.normal);
-    x = normalized(x);
-    const Vec3 y = cross(s.normal, x);
-    return s.center + x * (s.radius * std::cos(a)) + y * (s.radius * std::sin(a));
-}
-
-void sampleSegment(const Segment& s, std::vector<Vec3>& pts) {
-    pts.clear();
-    if (s.type == SegmentType::BSpline) {
-        for (int i = 0; i <= 4; ++i) pts.push_back(bsplineEval(s, static_cast<double>(i) / 4.0));
-        return;
-    }
-    if (s.type == SegmentType::Arc || s.type == SegmentType::Ellipse) {
-        for (int i = 0; i <= 4; ++i) {
-            if (s.type == SegmentType::Arc) {
-                pts.push_back(arcAt(s, static_cast<double>(i) / 4.0));
-            } else {
-                const Vec3 maj = normalized(s.major_axis);
-                const Vec3 minv = cross(s.normal, maj);
-                const double ang = s.start_angle + (static_cast<double>(i) / 4.0) * s.sweep;
-                pts.push_back(s.center + maj * (s.radius * std::cos(ang)) +
-                              minv * (s.radius_b * std::sin(ang)));
+// Sample section wires once; point queries use this cloud (avoids DistShapeShape per sample).
+std::vector<Vec3> sampleSectionPoints(const TopoDS_Shape& section, double spacing) {
+    std::vector<Vec3> pts;
+    spacing = std::max(spacing, 1e-3);
+    for (TopExp_Explorer ex(section, TopAbs_EDGE); ex.More(); ex.Next()) {
+        try {
+            BRepAdaptor_Curve c(TopoDS::Edge(ex.Current()));
+            const double f = c.FirstParameter();
+            const double l = c.LastParameter();
+            if (l <= f) continue;
+            GCPnts_UniformAbscissa discret(c, spacing, f, l);
+            if (!discret.IsDone() || discret.NbPoints() < 2) {
+                const gp_Pnt a = c.Value(f);
+                const gp_Pnt b = c.Value(l);
+                pts.push_back({a.X(), a.Y(), a.Z()});
+                pts.push_back({b.X(), b.Y(), b.Z()});
+                continue;
             }
+            for (int i = 1; i <= discret.NbPoints(); ++i) {
+                const gp_Pnt p = c.Value(discret.Parameter(i));
+                pts.push_back({p.X(), p.Y(), p.Z()});
+            }
+        } catch (const Standard_Failure&) {
+            continue;
         }
-        return;
     }
-    pts.push_back(s.start);
-    pts.push_back(s.end);
+    return pts;
 }
 
-double distToSection(const TopoDS_Shape& section, const Vec3& p) {
-    BRepExtrema_DistShapeShape dist(BRepBuilderAPI_MakeVertex(gp_Pnt(p.x, p.y, p.z)).Vertex(),
-                                    section);
-    dist.Perform();
-    return dist.IsDone() ? dist.Value() : 1e100;
+double distToPointCloud(const std::vector<Vec3>& cloud, const Vec3& p) {
+    double best = 1e100;
+    for (const Vec3& q : cloud) {
+        const double d = dist(p, q);
+        if (d < best) best = d;
+    }
+    return best;
+}
+
+bool isAnalyticSegment(const Segment& s) {
+    return s.type == SegmentType::Line || s.type == SegmentType::Arc ||
+           s.type == SegmentType::Ellipse;
+}
+
+Segment subBSpline(const Segment& s, double t0, double t1) {
+    t0 = std::min(1.0, std::max(0.0, t0));
+    t1 = std::min(1.0, std::max(0.0, t1));
+    if (t1 < t0) std::swap(t0, t1);
+    const int n = std::max(4, static_cast<int>(std::ceil((t1 - t0) * 16)) + 1);
+    std::vector<Vec3> pts;
+    pts.reserve(static_cast<size_t>(n));
+    for (int i = 0; i < n; ++i) {
+        const double u = t0 + (t1 - t0) * (static_cast<double>(i) / (n - 1));
+        pts.push_back(bsplineEval(s, u));
+    }
+    return fitCubicBSpline(pts, false, std::max(1e-4, s.fit_error));
+}
+
+// L2 B-splines only: keep parameter intervals near the OCC section wire.
+void clipBSplineBySplitting(const RawSegment& rs, const std::vector<Vec3>& section_pts, double snap,
+                            double minLen, std::vector<RawSegment>& out) {
+    if (rs.degenerate) {
+        out.push_back(rs);
+        return;
+    }
+    const Segment& s = rs.geom;
+    constexpr int n = 33;
+    std::vector<char> inlier(static_cast<size_t>(n), 0);
+    int n_in = 0;
+    for (int i = 0; i < n; ++i) {
+        const double t = static_cast<double>(i) / (n - 1);
+        if (distToPointCloud(section_pts, bsplineEval(s, t)) <= snap) {
+            inlier[static_cast<size_t>(i)] = 1;
+            ++n_in;
+        }
+    }
+
+    if (n_in == n) {
+        out.push_back(rs);
+        return;
+    }
+
+    for (int i = 1; i + 1 < n; ++i) {
+        if (!inlier[static_cast<size_t>(i)] && inlier[static_cast<size_t>(i - 1)] &&
+            inlier[static_cast<size_t>(i + 1)]) {
+            inlier[static_cast<size_t>(i)] = 1;
+            ++n_in;
+        }
+    }
+    if (n_in == 0) return;
+
+    int i = 0;
+    while (i < n) {
+        while (i < n && !inlier[static_cast<size_t>(i)]) ++i;
+        if (i >= n) break;
+        const int i0 = i;
+        while (i < n && inlier[static_cast<size_t>(i)]) ++i;
+        const int i1 = i - 1;
+        if (i1 <= i0) continue;
+
+        const double t0 = static_cast<double>(i0) / (n - 1);
+        const double t1 = static_cast<double>(i1) / (n - 1);
+        RawSegment piece = rs;
+        piece.closed_loop = false;
+        piece.geom = subBSpline(s, t0, t1);
+        if (bsplineLength(piece.geom) < minLen) continue;
+        out.push_back(std::move(piece));
+    }
 }
 
 }  // namespace
@@ -91,20 +162,36 @@ public:
 
     void clipSegmentsToSection(const IShape& shape, const Plane& plane,
                                std::vector<RawSegment>& segs, double tol) override {
+        // L1 line / arc / ellipse: trust face trim; never filter against OCC Section.
+        bool need_section = false;
+        for (const RawSegment& rs : segs) {
+            if (!rs.degenerate && rs.geom.type == SegmentType::BSpline) {
+                need_section = true;
+                break;
+            }
+        }
+        if (!need_section) return;
+
         const TopoDS_Shape section = sectionShape(shape, plane);
         if (section.IsNull()) return;
         const double snap = std::max(tol * 100.0, 0.01);
-        std::vector<Vec3> samples;
-        segs.erase(std::remove_if(segs.begin(), segs.end(),
-                                  [&](const RawSegment& rs) {
-                                      if (rs.degenerate) return false;
-                                      sampleSegment(rs.geom, samples);
-                                      for (const Vec3& p : samples) {
-                                          if (distToSection(section, p) > snap) return true;
-                                      }
-                                      return false;
-                                  }),
-                   segs.end());
+        const double minLen = std::max(tol, 1e-6);
+        // Sample denser than snap so polyline distance ≈ true section distance.
+        const double spacing = std::max(0.05, 0.5 * snap);
+        const std::vector<Vec3> section_pts = sampleSectionPoints(section, spacing);
+        if (section_pts.empty()) return;
+        const double cloud_snap = snap + 0.5 * spacing;
+
+        std::vector<RawSegment> clipped;
+        clipped.reserve(segs.size() + 4);
+        for (const RawSegment& rs : segs) {
+            if (rs.degenerate || isAnalyticSegment(rs.geom)) {
+                clipped.push_back(rs);
+                continue;
+            }
+            clipBSplineBySplitting(rs, section_pts, cloud_snap, minLen, clipped);
+        }
+        segs = std::move(clipped);
     }
 };
 

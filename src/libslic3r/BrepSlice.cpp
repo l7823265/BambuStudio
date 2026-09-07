@@ -15,10 +15,30 @@
 #include <boost/log/trivial.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <fstream>
+#include <iomanip>
 #include <stdexcept>
 
 namespace Slic3r {
+
+// #region agent log
+static void agent_brep_dbg(const char *hyp, const char *loc, const char *msg, const std::string &data_json)
+{
+    try {
+        std::ofstream f("E:/learning/slicer/BambuStudio/debug-9ef780.log", std::ios::app);
+        if (!f)
+            return;
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::system_clock::now().time_since_epoch())
+                            .count();
+        f << "{\"sessionId\":\"9ef780\",\"runId\":\"winding-fix\",\"hypothesisId\":\"" << hyp
+          << "\",\"location\":\"" << loc << "\",\"message\":\"" << msg << "\",\"data\":" << data_json
+          << ",\"timestamp\":" << ms << "}\n";
+    } catch (...) {}
+}
+// #endregion
 
 static bool is_step_path(const std::string &path)
 {
@@ -153,27 +173,111 @@ static bool contour_usable_as_polygon(const brepslicer::Contour &c, double gap_t
 static ExPolygons layer_to_expolygons(const brepslicer::Layer   &layer,
                                       const Transform3d         &T,
                                       double                     chord,
-                                      int                        solid_id_filter)
+                                      int                        solid_id_filter,
+                                      double                     object_z = 0.,
+                                      double                     step_h   = 0.)
 {
     Polygons polys;
     polys.reserve(layer.contours.size());
     const double gap_tol = std::max(chord * 2.0, 1e-3);
+    int closed_in = 0, open_used = 0, open_skip = 0, pts_lt3 = 0;
+    double max_gap = 0;
     for (const brepslicer::Contour &c : layer.contours) {
         if (solid_id_filter >= 0 && c.solid_id != solid_id_filter)
             continue;
+        if (c.closed) {
+            ++closed_in;
+        } else if (contour_usable_as_polygon(c, gap_tol)) {
+            ++open_used;
+            const brepslicer::Vec3 &a = c.segments.front().start;
+            const brepslicer::Vec3 &b = c.segments.back().end;
+            const double g = std::sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) +
+                                       (a.z - b.z) * (a.z - b.z));
+            max_gap = std::max(max_gap, g);
+        } else {
+            ++open_skip;
+            continue;
+        }
         if (!contour_usable_as_polygon(c, gap_tol))
             continue;
         Polygon p = contour_to_polygon(c, T, chord);
         if (p.size() >= 3)
             polys.emplace_back(std::move(p));
+        else
+            ++pts_lt3;
     }
-    if (polys.empty())
+    if (polys.empty()) {
+        // #region agent log
+        if (closed_in + open_used > 0) {
+            agent_brep_dbg("H6", "BrepSlice.cpp:layer_to_expolygons", "empty_layer",
+                           std::string("{\"reason\":\"no_poly\",\"object_z\":") +
+                               std::to_string(object_z) + ",\"step_h\":" + std::to_string(step_h) +
+                               ",\"layer_z\":" + std::to_string(layer.z) + ",\"closed\":" +
+                               std::to_string(closed_in) + ",\"open_used\":" + std::to_string(open_used) +
+                               ",\"open_skip\":" + std::to_string(open_skip) + ",\"pts_lt3\":" +
+                               std::to_string(pts_lt3) + ",\"max_open_gap\":" + std::to_string(max_gap) +
+                               "}");
+        }
+        // #endregion
         return {};
+    }
     if (T.linear().determinant() < 0.) {
         for (Polygon &p : polys)
             p.reverse();
     }
-    return union_ex(polys);
+    double poly_area_sum = 0;
+    int    poly_zero = 0;
+    for (const Polygon &p : polys) {
+        const double a = unscale<double>(unscale<double>(p.area()));
+        poly_area_sum += a;
+        if (std::abs(a) < 1e-6)
+            ++poly_zero;
+    }
+    ExPolygons ex = union_ex(polys);
+    // #region agent log
+    int cw_before = 0;
+    for (const ExPolygon &ep : ex) {
+        if (!ep.contour.is_counter_clockwise())
+            ++cw_before;
+    }
+    // #endregion
+    // Clipper can leave outer contours clockwise (seen at grazing Z). SeamPlacer
+    // and perimeter logic require ExPolygon contour=CCW, holes=CW.
+    for (ExPolygon &ep : ex) {
+        ep.contour.make_counter_clockwise();
+        for (Polygon &hole : ep.holes)
+            hole.make_clockwise();
+    }
+    // #region agent log
+    {
+        int ccw = 0, cw = 0;
+        double area_sum = 0;
+        for (const ExPolygon &ep : ex) {
+            area_sum += unscale<double>(unscale<double>(ep.contour.area()));
+            if (ep.contour.is_counter_clockwise())
+                ++ccw;
+            else
+                ++cw;
+        }
+        const char *msg = ex.empty() ? "empty_layer" : "layer_convert";
+        const char *hyp = ex.empty() ? "H6" : "H4";
+        agent_brep_dbg(hyp, "BrepSlice.cpp:layer_to_expolygons", msg,
+                       std::string("{\"reason\":\"") + (ex.empty() ? "union_drop" : "ok") +
+                           "\",\"object_z\":" + std::to_string(object_z) + ",\"step_h\":" +
+                           std::to_string(step_h) + ",\"layer_z\":" + std::to_string(layer.z) +
+                           ",\"closed\":" + std::to_string(closed_in) + ",\"open_used\":" +
+                           std::to_string(open_used) + ",\"open_skip\":" + std::to_string(open_skip) +
+                           ",\"pts_lt3\":" + std::to_string(pts_lt3) + ",\"max_open_gap\":" +
+                           std::to_string(max_gap) + ",\"expolys\":" + std::to_string(ex.size()) +
+                           ",\"ccw\":" + std::to_string(ccw) + ",\"cw\":" + std::to_string(cw) +
+                           ",\"cw_before\":" + std::to_string(cw_before) + ",\"npoly\":" +
+                           std::to_string(polys.size()) + ",\"poly_zero\":" +
+                           std::to_string(poly_zero) + ",\"poly_area\":" +
+                           std::to_string(poly_area_sum) + ",\"ex_area\":" +
+                           std::to_string(area_sum) + "}");
+    }
+    // #endregion
+    return ex;
 }
 
 // Match mesh slicing: trafo_centered * volume_matrix * unit_scale * (p_step - mesh_offset).
@@ -346,13 +450,51 @@ bool slice_model_object_brep(const ModelObject           &object,
         BrepVolumeSlices vs;
         vs.volume_id = part->id();
         vs.layers.resize(zs.size());
+        std::vector<double> empty_step_hs;
+        empty_step_hs.reserve(8);
         for (size_t i = 0; i < zs.size(); ++i) {
             if (throw_on_cancel)
                 throw_on_cancel();
-            vs.layers[i] = layer_to_expolygons(result.layers[i], T, chord_step, solid_id);
+            const double step_h_i = opt.explicit_heights[i];
+            vs.layers[i] = layer_to_expolygons(result.layers[i], T, chord_step, solid_id,
+                                               double(zs[i]), step_h_i);
             if (!vs.layers[i].empty())
                 any = true;
+            else if (!result.layers[i].contours.empty())
+                empty_step_hs.push_back(step_h_i);
         }
+
+        // #region agent log
+        if (!empty_step_hs.empty()) {
+            std::string list = "[";
+            for (size_t k = 0; k < empty_step_hs.size(); ++k) {
+                if (k)
+                    list += ",";
+                list += std::to_string(empty_step_hs[k]);
+            }
+            list += "]";
+            agent_brep_dbg("H6", "BrepSlice.cpp:slice", "empty_layer_summary",
+                           std::string("{\"volume\":\"") + part->name + "\",\"count\":" +
+                               std::to_string(empty_step_hs.size()) + ",\"step_heights\":" + list +
+                               ",\"object_z0\":" + std::to_string(zs.front()) + ",\"object_z1\":" +
+                               std::to_string(zs.back()) + ",\"t_z\":" + std::to_string(t.z()) +
+                               ",\"nlen\":" + std::to_string(nlen) + "}");
+            try {
+                std::ofstream dump("E:/learning/slicer/BambuStudio/empty_layers_brepslicer.txt",
+                                   std::ios::out | std::ios::trunc);
+                if (dump) {
+                    dump << "# Empty Studio layers that still had B-rep contours (union/sample dropped).\n";
+                    dump << "# Use these STEP-plane heights in BrepSlicer (explicit_heights / -z).\n";
+                    dump << "# STEP: " << path << "\n";
+                    dump << "# volume: " << part->name << "\n";
+                    dump << "# normal: " << n_step.x() << " " << n_step.y() << " " << n_step.z() << "\n";
+                    dump << "# count: " << empty_step_hs.size() << "\n";
+                    for (double h : empty_step_hs)
+                        dump << std::setprecision(10) << h << "\n";
+                }
+            } catch (...) {}
+        }
+        // #endregion
 
         if (!layer_has_geometry(vs.layers)) {
             BOOST_LOG_TRIVIAL(warning) << "BrepSlicer produced no contours for volume " << part->name

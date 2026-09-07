@@ -103,20 +103,27 @@ SliceResult sliceShape(const std::shared_ptr<IShape>& shape, const SliceOptions&
 
     std::vector<double> heights = opt.explicit_heights;
     if (heights.empty()) {
+        const double span = dmax - dmin;
+        double lh = opt.layer_height;
+        int count = opt.layer_count;
+        if (count > 0) {
+            if (span <= opt.tolerance) {
+                throw std::runtime_error("shape has no extent along slice normal");
+            }
+            lh = span / static_cast<double>(count);
+        } else {
+            if (lh <= 0) throw std::runtime_error("layer-height must be positive");
+        }
         double start = opt.start_height;
         if (!opt.start_height_set) {
-            start = dmin + 0.5 * opt.layer_height;
+            start = dmin + 0.5 * lh;
         }
-        int count = opt.layer_count;
         if (count < 0) {
-            if (opt.layer_height <= 0) {
-                throw std::runtime_error("layer-height must be positive");
-            }
-            count = static_cast<int>(std::floor((dmax - start) / opt.layer_height)) + 1;
+            count = static_cast<int>(std::floor((dmax - start) / lh)) + 1;
         }
         heights.reserve(static_cast<size_t>(std::max(count, 0)));
         for (int i = 0; i < count; ++i) {
-            const double h = start + i * opt.layer_height;
+            const double h = start + i * lh;
             if (h > dmax + opt.tolerance) break;
             if (h < dmin - opt.tolerance) continue;
             heights.push_back(h);

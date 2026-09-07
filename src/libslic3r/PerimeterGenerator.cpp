@@ -19,6 +19,9 @@
 #include "OverhangDetector.hpp"
 #include "FuzzySkin.hpp"
 
+#include <fstream>
+#include <chrono>
+
 static const double narrow_loop_length_threshold = 10;
 //BBS: when the width of expolygon is smaller than
 //ext_perimeter_width + ext_perimeter_spacing  * (1 - SMALLER_EXT_INSET_OVERLAP_TOLERANCE),
@@ -26,6 +29,32 @@ static const double narrow_loop_length_threshold = 10;
 static constexpr double SMALLER_EXT_INSET_OVERLAP_TOLERANCE = 0.22;
 
 namespace Slic3r {
+
+// #region agent log
+static void agent_loop_dbg(const char *hyp, const char *loc, const char *msg, const ExtrusionPaths &paths)
+{
+    if (paths.empty())
+        return;
+    const Point &a = paths.front().polyline.points.front();
+    const Point &b = paths.back().polyline.points.back();
+    if (a == b)
+        return;
+    try {
+        std::ofstream f("E:/learning/slicer/BambuStudio/debug-9ef780.log", std::ios::app);
+        if (!f)
+            return;
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::system_clock::now().time_since_epoch())
+                            .count();
+        const double gap = (a - b).cast<double>().norm() * SCALING_FACTOR;
+        f << "{\"sessionId\":\"9ef780\",\"runId\":\"extrusion-assert\",\"hypothesisId\":\"" << hyp
+          << "\",\"location\":\"" << loc << "\",\"message\":\"" << msg << "\",\"data\":{\"paths\":"
+          << paths.size() << ",\"gap_mm\":" << gap << ",\"ax\":" << unscale<double>(a.x())
+          << ",\"ay\":" << unscale<double>(a.y()) << ",\"bx\":" << unscale<double>(b.x())
+          << ",\"by\":" << unscale<double>(b.y()) << "},\"timestamp\":" << ms << "}\n";
+    } catch (...) {}
+}
+// #endregion
 
 // Produces a random value between 0 and 1. Thread-safe.
 static double random_value() {
@@ -440,6 +469,33 @@ static ExtrusionEntityCollection traverse_loops(const PerimeterGenerator &perime
             // Reapply the nearest point search for starting point.
             // We allow polyline reversal because Clipper may have randomly reversed polylines during clipping.
             chain_and_reorder_extrusion_paths(paths, &paths.front().first_point());
+
+            // Overhang clip can leave disconnected fragments. ExtrusionLoop requires a
+            // closed cycle (first==last); if chaining failed, fall back to the unbroken wall.
+            bool closed_loop = !paths.empty() &&
+                               paths.front().first_point() == paths.back().last_point();
+            if (closed_loop) {
+                for (size_t i = 1; i < paths.size(); ++i) {
+                    if (paths[i - 1].last_point() != paths[i].first_point()) {
+                        closed_loop = false;
+                        break;
+                    }
+                }
+            }
+            if (!closed_loop) {
+                // #region agent log
+                agent_loop_dbg("H1", "PerimeterGenerator.cpp:traverse_loops", "overhang_chain_fallback", paths);
+                // #endregion
+                paths.clear();
+                ExtrusionPath path(role);
+                path.polyline = polygon.split_at_first_point();
+                path.overhang_degree = 0;
+                path.curve_degree = 0;
+                path.mm3_per_mm = extrusion_mm3_per_mm;
+                path.width = extrusion_width;
+                path.height = (float)perimeter_generator.layer_height;
+                paths.emplace_back(std::move(path));
+            }
         } else {
             ExtrusionPath path(role);
             //BBS.
@@ -456,6 +512,9 @@ static ExtrusionEntityCollection traverse_loops(const PerimeterGenerator &perime
             path.set_customize_flag(flag);
         }
 
+        // #region agent log
+        agent_loop_dbg("H1", "PerimeterGenerator.cpp:traverse_loops", "extrusion_loop_before_append", paths);
+        // #endregion
         coll.append(ExtrusionLoop(std::move(paths), loop_role, flag));
     }
 
@@ -780,12 +839,19 @@ static ExtrusionEntityCollection traverse_extrusions(const PerimeterGenerator& p
         // Append paths to collection.
         if (!paths.empty()) {
             if (extrusion->is_closed) {
+                // #region agent log
+                agent_loop_dbg("H1", "PerimeterGenerator.cpp:arachne", "extrusion_loop_before_orient", paths);
+                // #endregion
                 ExtrusionLoop extrusion_loop(std::move(paths), extrusion->is_contour()? elrDefault : elrPerimeterHole);
                 // Restore the orientation of the extrusion loop.
                 if (pg_extrusion.is_contour)
                     extrusion_loop.make_counter_clockwise();
                 else
                     extrusion_loop.make_clockwise();
+
+                // #region agent log
+                agent_loop_dbg("H1", "PerimeterGenerator.cpp:arachne", "extrusion_loop_after_orient", extrusion_loop.paths);
+                // #endregion
 
                 for (auto it = std::next(extrusion_loop.paths.begin()); it != extrusion_loop.paths.end(); ++it) {
                     assert(it->polyline.points.size() >= 2);

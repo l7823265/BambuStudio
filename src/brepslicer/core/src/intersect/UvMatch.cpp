@@ -250,9 +250,16 @@ void bisectIsoSeed(const IFace& face, const Plane& pln, const UVBox& dom, bool f
 void addBoundaryIsoSeeds(const IFace& face, const Plane& pln, const UVBox& dom, bool fix_v,
                          double fixed, const std::vector<Vec3>& boundary3d, double classTol,
                          std::vector<UvPt>& out) {
+    // Only attach edge∩plane points to isos that already have a nearby plane hit.
+    // A UV-only band on large NURBS domains otherwise copies the same boundary
+    // point onto every iso; chainHits then builds long degenerate chains
+    // (huapingdun faces 0/3/28/44 at |z|≈8.65).
+    if (out.empty() || boundary3d.empty()) return;
+
     const double du = std::max(1e-16, dom.umax - dom.umin);
     const double dv = std::max(1e-16, dom.vmax - dom.vmin);
-    const double band = std::max(classTol, 0.01 * (du + dv));
+    const double band = std::max(classTol, 0.002 * (du + dv));
+    const double near3d = std::max(1.0, 50.0 * classTol);
     for (const Vec3& p : boundary3d) {
         if (std::abs(signedPlaneDist(pln, p)) > 10.0 * classTol) continue;
         double u = 0, v = 0;
@@ -260,7 +267,11 @@ void addBoundaryIsoSeeds(const IFace& face, const Plane& pln, const UVBox& dom, 
         if (dom.periodic_u || dom.periodic_v) wrapUV(dom, u, v);
         const double free = fix_v ? u : v;
         const double fixd = fix_v ? v : u;
+        (void)free;
         if (std::abs(fixd - fixed) > band) continue;
+        double best = 1e100;
+        for (const UvPt& h : out) best = std::min(best, dist(h.p, p));
+        if (best > near3d) continue;
         pushHit(out, {u, v, p}, classTol);
     }
 }
@@ -309,6 +320,8 @@ void chainHits(const std::vector<std::vector<UvPt>>& per_iso, double link3d,
                 if (nodes[k].used || nodes[k].iso <= cur.iso || nodes[k].iso > cur.iso + 2)
                     continue;
                 const double d = dist(pt(cur).p, pt(nodes[k]).p);
+                // Skip coincident duplicates (same boundary point stamped on many isos).
+                if (d < 1e-9) continue;
                 if (d < bestD) {
                     bestD = d;
                     best = static_cast<int>(k);
@@ -328,6 +341,7 @@ void chainHits(const std::vector<std::vector<UvPt>>& per_iso, double link3d,
                 if (nodes[k].used || nodes[k].iso >= cur.iso || cur.iso > nodes[k].iso + 2)
                     continue;
                 const double d = dist(pt(cur).p, pt(nodes[k]).p);
+                if (d < 1e-9) continue;
                 if (d < bestD) {
                     bestD = d;
                     best = static_cast<int>(k);
@@ -636,12 +650,22 @@ double faceOwnershipScore(const IFace& face, const Vec3& p, double tol) {
     return penalty + std::abs(dot({p.x - s.x, p.y - s.y, p.z - s.z}, n));
 }
 
-std::vector<const FaceRecord*> neighborFaces(int self_id, const SliceOptions& opt) {
+std::vector<const FaceRecord*> neighborFaces(int self_id, const SliceOptions& opt,
+                                             const BBox& self_box) {
     std::vector<const FaceRecord*> out;
     if (!opt.plane_faces) return out;
     out.reserve(opt.plane_faces->size());
+    // Only score faces whose AABB is near self — full plane_faces was O(N²) Extrema.
+    const double pad = 5.0;  // mm; shared-edge ownership without whole-model scans
     for (const FaceRecord* fr : *opt.plane_faces) {
-        if (fr && fr->face_id != self_id) out.push_back(fr);
+        if (!fr || fr->face_id == self_id) continue;
+        if (self_box.valid && fr->box.valid) {
+            if (fr->box.xmax < self_box.xmin - pad || fr->box.xmin > self_box.xmax + pad ||
+                fr->box.ymax < self_box.ymin - pad || fr->box.ymin > self_box.ymax + pad ||
+                fr->box.zmax < self_box.zmin - pad || fr->box.zmin > self_box.zmax + pad)
+                continue;
+        }
+        out.push_back(fr);
     }
     return out;
 }
@@ -649,10 +673,20 @@ std::vector<const FaceRecord*> neighborFaces(int self_id, const SliceOptions& op
 int ownerFaceId(const IFace& self, int self_id, const std::vector<const FaceRecord*>& neighbors,
                 const Vec3& p, double tol) {
     const double self_score = faceOwnershipScore(self, p, tol);
+    // Already clearly on self — skip neighbor Extrema.
+    if (self_score <= tol) return self_id;
     int best_id = self_id;
     double best = self_score;
     for (const FaceRecord* fr : neighbors) {
         if (!fr || !fr->face) continue;
+        // Cheap reject: skip faces whose bbox is far from this seed.
+        if (fr->box.valid) {
+            const double pad = std::max(2.0, 10.0 * tol);
+            if (p.x < fr->box.xmin - pad || p.x > fr->box.xmax + pad ||
+                p.y < fr->box.ymin - pad || p.y > fr->box.ymax + pad ||
+                p.z < fr->box.zmin - pad || p.z > fr->box.zmax + pad)
+                continue;
+        }
         const double sc = faceOwnershipScore(*fr->face, p, tol);
         if (sc + tol < best) {
             best = sc;
@@ -814,6 +848,24 @@ double gapSplitDist(double link3d, double tol) {
     return std::min(link3d, std::max(0.001, 1.25));
 }
 
+// Effective gap threshold for one chain: never treat the chain's own typical
+// iso spacing as a hole (face 11/31 had ~1.39 mm steps vs a hard 1.25 mm cap).
+double gapSplitDistForChain(const std::vector<UvPt>& chain, double link3d, double tol) {
+    double base = gapSplitDist(link3d, tol);
+    if (chain.size() < 3) return base;
+    std::vector<double> steps;
+    steps.reserve(chain.size() - 1);
+    for (size_t i = 1; i < chain.size(); ++i) {
+        const double d = dist(chain[i - 1].p, chain[i].p);
+        if (d > tol) steps.push_back(d);
+    }
+    if (steps.empty()) return base;
+    const size_t mid = steps.size() / 2;
+    std::nth_element(steps.begin(), steps.begin() + static_cast<std::ptrdiff_t>(mid), steps.end());
+    const double median = steps[mid];
+    return std::max(base, 1.5 * median);
+}
+
 double boundarySnapDist(double link3d, double tol) {
     (void)tol;
     return std::max(link3d, 1.25);
@@ -859,7 +911,7 @@ void snapToBoundary(UvPt& q, const std::vector<Vec3>& boundary3d, double tol) {
 std::vector<std::vector<UvPt>> splitChainAtGaps(const IFace& face, const std::vector<UvPt>& chain,
                                                 double link3d, const std::vector<Vec3>& boundary3d,
                                                 double tol) {
-    const double gap_dist = gapSplitDist(link3d, tol);
+    const double gap_dist = gapSplitDistForChain(chain, link3d, tol);
     std::vector<std::vector<UvPt>> parts;
     if (chain.empty()) return parts;
     std::vector<UvPt> cur;
@@ -936,7 +988,8 @@ std::vector<std::vector<UvPt>> filterTrimChains(const IFace& face, const FaceRec
                                                 double link3d, SeedData& seeds,
                                                 FaceSeedStats* stats = nullptr) {
     std::vector<std::vector<UvPt>> kept;
-    const std::vector<const FaceRecord*> neighbors = neighborFaces(iface.face_id, opt);
+    const std::vector<const FaceRecord*> neighbors =
+        neighborFaces(iface.face_id, opt, iface.box);
     auto& chains = seeds.chains;
     for (auto& ch : chains) {
         std::vector<std::vector<UvPt>> trim_runs =
@@ -1121,6 +1174,45 @@ std::vector<RawSegment> intersectNurbsFaceWithPlaneUvMatch(const FaceRecord& ifa
     std::vector<std::vector<UvPt>> chains =
         filterTrimChains(face, iface, opt, boundary3d, seeds.link3d, seeds, &stats);
 
+    // Diagnose faces that lose every iso seed on the trim filter.
+    if (opt.constraint_audit && chains.empty() && seeds.nhit > 0) {
+        int in_trim = 0, on_trim = 0, out_trim = 0;
+        int plane_in = 0;
+        double best_abs_f = 1e300;
+        UvPt best{};
+        const int nu = 32, nv = 32;
+        for (int iu = 0; iu <= nu; ++iu) {
+            for (int iv = 0; iv <= nv; ++iv) {
+                const double u =
+                    dom.umin + (dom.umax - dom.umin) * static_cast<double>(iu) / nu;
+                const double v =
+                    dom.vmin + (dom.vmax - dom.vmin) * static_cast<double>(iv) / nv;
+                const PointClass c = face.classifyUV(u, v, opt.tolerance);
+                if (c == PointClass::In) ++in_trim;
+                else if (c == PointClass::On) ++on_trim;
+                else ++out_trim;
+                if (!inOrOn(c)) continue;
+                const double f = std::abs(fval(face, pln, u, v));
+                if (f < best_abs_f) {
+                    best_abs_f = f;
+                    best = {u, v, face.evalUV(u, v)};
+                }
+                if (f <= opt.geom_tolerance) ++plane_in;
+            }
+        }
+        const BBox bb = face.bbox();
+        std::ostringstream os;
+        os << "trim_empty face=" << iface.face_id << " nhit=" << seeds.nhit
+           << " boundary=" << boundary3d.size() << " dom=[" << dom.umin << "," << dom.umax << "]x["
+           << dom.vmin << "," << dom.vmax << "] bbox=[" << bb.xmin << "," << bb.xmax << "]x["
+           << bb.ymin << "," << bb.ymax << "]x[" << bb.zmin << "," << bb.zmax
+           << "] uv_grid In=" << in_trim << " On=" << on_trim << " Out=" << out_trim
+           << " plane_hits_in_trim=" << plane_in << " best_|f|=" << best_abs_f << " at uv=("
+           << best.u << "," << best.v << ") p=(" << best.p.x << "," << best.p.y << "," << best.p.z
+           << ")";
+        opt.constraint_audit->push_back(os.str());
+    }
+
     // Faces that hit the plane but lost all seeds after trim: constraint re-seed or denser iso.
     bool constraint_recovered = false;
     if (chains.empty() && boundary3d.size() >= 2) {
@@ -1161,21 +1253,25 @@ std::vector<RawSegment> intersectNurbsFaceWithPlaneUvMatch(const FaceRecord& ifa
                                     opt.constraint_audit);
     }
 
+    const bool allow_march = (opt.nurbs_method == NurbsMethod::Auto);
     if (chains.empty() && seeds.nhit == 0 && boundary3d.size() < 2) {
-        stats.uvmarch_fallback = true;
+        stats.uvmarch_fallback = allow_march;
         if (opt.constraint_audit) {
             std::ostringstream os;
             os << "constraint_setup face=" << iface.face_id
-               << " stage=uvmarch_fallback reason=no_boundary_hits_for_recovery";
+               << " stage=" << (allow_march ? "uvmarch_fallback" : "uvmatch_only_empty")
+               << " reason=no_boundary_hits_for_recovery";
             opt.constraint_audit->push_back(os.str());
         }
         if (opt.face_seed_stats) opt.face_seed_stats->push_back(stats);
-        return intersectNurbsFaceWithPlane(iface, pln, frame, opt, boundary3d);
+        if (allow_march) return intersectNurbsFaceWithPlane(iface, pln, frame, opt, boundary3d);
+        return segs;
     }
     if (segs.empty()) {
-        stats.uvmarch_fallback = true;
+        stats.uvmarch_fallback = allow_march;
         if (opt.face_seed_stats) opt.face_seed_stats->push_back(stats);
-        return intersectNurbsFaceWithPlane(iface, pln, frame, opt, boundary3d);
+        if (allow_march) return intersectNurbsFaceWithPlane(iface, pln, frame, opt, boundary3d);
+        return segs;
     }
     if (opt.face_seed_stats) opt.face_seed_stats->push_back(stats);
     return segs;

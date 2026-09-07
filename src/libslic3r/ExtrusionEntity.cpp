@@ -5,6 +5,8 @@
 #include "Extruder.hpp"
 #include "Flow.hpp"
 #include <cmath>
+#include <chrono>
+#include <fstream>
 #include <limits>
 #include <sstream>
 #include "Utils.hpp"
@@ -154,6 +156,32 @@ void ExtrusionLoop::reverse()
     for (ExtrusionPath &path : this->paths)
         path.reverse();
     std::reverse(this->paths.begin(), this->paths.end());
+}
+
+const Point& ExtrusionLoop::last_point() const
+{
+    // #region agent log
+    if (!this->paths.empty() &&
+        this->first_point() != this->paths.back().polyline.points.back()) {
+        try {
+            std::ofstream f("E:/learning/slicer/BambuStudio/debug-9ef780.log", std::ios::app);
+            if (f) {
+                const Point &a = this->first_point();
+                const Point &b = this->paths.back().polyline.points.back();
+                const double gap = (a - b).cast<double>().norm() * SCALING_FACTOR;
+                const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::system_clock::now().time_since_epoch())
+                                    .count();
+                f << "{\"sessionId\":\"9ef780\",\"runId\":\"extrusion-assert\",\"hypothesisId\":\"H1\","
+                     "\"location\":\"ExtrusionEntity.cpp:last_point\",\"message\":\"loop_not_closed\","
+                     "\"data\":{\"paths\":" << this->paths.size() << ",\"gap_mm\":" << gap
+                  << "},\"timestamp\":" << ms << "}\n";
+            }
+        } catch (...) {}
+    }
+    // #endregion
+    assert(this->first_point() == this->paths.back().polyline.points.back());
+    return this->first_point();
 }
 
 Polygon ExtrusionLoop::polygon() const

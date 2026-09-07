@@ -4,7 +4,7 @@
 
 get_filename_component(_brepslicer_in_tree "${CMAKE_CURRENT_SOURCE_DIR}/core" ABSOLUTE)
 get_filename_component(_brepslicer_sibling
-    "${CMAKE_SOURCE_DIR}/../BrepSlicer-core-L2-src-20260819" ABSOLUTE)
+    "${CMAKE_SOURCE_DIR}/../BrepSlicer-core-L2-v3" ABSOLUTE)
 
 if(EXISTS "${_brepslicer_in_tree}/include/brepslicer/Slicer.h")
     set(_brepslicer_default "${_brepslicer_in_tree}")

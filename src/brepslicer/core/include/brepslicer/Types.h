@@ -112,6 +112,12 @@ struct SliceResult {
     std::vector<std::string> logs;
 };
 
+enum class NurbsMethod {
+    Auto,     // UVMatch first; fall back to UVMarch if empty
+    UvMatch,  // iso-sample / reverse-fit only (no march fallback)
+    UvMarch   // UV marching only (skip iso-sample)
+};
+
 struct SliceOptions {
     Vec3 normal{0, 0, 1};
     double layer_height = 0.2;
@@ -123,6 +129,7 @@ struct SliceOptions {
     double stitch_tolerance = 0.01; // merge segment endpoints when gap < this (mm)
     double geom_tolerance = 1e-9;  // analytic equality (L1 circle)
     double angular_tolerance = 1e-10;
+    NurbsMethod nurbs_method = NurbsMethod::Auto;
     std::string svg_dir;           // directory: one SVG per layer
     std::string dxf_path;          // .dxf file, or directory of per-layer DXF
     std::string open_dxf_dir;      // debug: DXF for layers with open contour(s) only

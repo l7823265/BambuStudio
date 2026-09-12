@@ -275,12 +275,17 @@ std::vector<QuadricCurve> planeTorus(const Plane& pln, const Torus3& tor, double
 
     if (std::abs(dot(n, k)) <= std::sin(angTol)) {
         const double dist = std::abs(h);
-        if (dist > R + r + geomTol) return {};
-        if (std::abs(dist - (R + r)) <= geomTol || std::abs(dist - std::abs(R - r)) <= geomTol) {
+        // Near-tangent outer/inner: treat as degenerate point (plane almost kisses torus).
+        const double outer = R + r;
+        const double inner = std::abs(R - r);
+        if (dist > outer + geomTol) return {};
+        if (std::abs(dist - outer) <= std::max(geomTol, 0.05) ||
+            std::abs(dist - inner) <= std::max(geomTol, 0.05)) {
             Vec3 u;
             if (!unitize(cross(k, n), u, 1e-14)) return {qcPoint(C, true)};
             const double side = (h >= 0) ? 1.0 : -1.0;
-            const Vec3 p = C + n * (side * dist);
+            const double reach = (std::abs(dist - outer) <= std::abs(dist - inner)) ? outer : inner;
+            const Vec3 p = C + n * (side * reach);
             return {qcPoint(p, true)};
         }
         if (dist <= geomTol) {

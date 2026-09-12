@@ -49,6 +49,7 @@ public:
     std::vector<std::vector<std::shared_ptr<IEdge>>> wires() const override;
     void uvIsoSamples(std::vector<double>& u_samples,
                       std::vector<double>& v_samples) const override;
+    std::vector<Vec3> samplePlaneSection(const Plane& pln, double spacing) const override;
     const TopoDS_Face& occFace() const { return face_; }
 
 private:

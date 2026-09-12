@@ -2,12 +2,15 @@
 
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
+#include <BRepAlgoAPI_Section.hxx>
 #include <BRepBndLib.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepClass_FaceClassifier.hxx>
 #include <BRepTools_WireExplorer.hxx>
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
 #include <Extrema_ExtPS.hxx>
+#include <GCPnts_UniformAbscissa.hxx>
 #include <GeomAbs_CurveType.hxx>
 #include <GeomAbs_SurfaceType.hxx>
 #include <Geom_BSplineSurface.hxx>
@@ -30,9 +33,11 @@
 #include <gp_Vec.hxx>
 #include <TopoDS_Wire.hxx>
 
+#include <algorithm>
 #include <cmath>
 #include <memory>
 #include <stdexcept>
+#include <vector>
 
 namespace brepslicer {
 namespace {
@@ -299,6 +304,40 @@ void OccFace::uvIsoSamples(std::vector<double>& u_samples, std::vector<double>& 
             uniqueKnots(bs->VKnots(), ads.FirstVParameter(), ads.LastVParameter(), v_samples);
         }
     }
+}
+
+std::vector<Vec3> OccFace::samplePlaneSection(const Plane& pln, double spacing) const {
+    std::vector<Vec3> pts;
+    spacing = std::max(spacing, 1e-3);
+    try {
+        const gp_Pln gpln(gp_Pnt(pln.n.x * pln.d, pln.n.y * pln.d, pln.n.z * pln.d),
+                          gp_Dir(pln.n.x, pln.n.y, pln.n.z));
+        const TopoDS_Face pface = BRepBuilderAPI_MakeFace(gpln).Face();
+        BRepAlgoAPI_Section section(face_, pface, Standard_False);
+        section.Approximation(Standard_False);
+        section.Build();
+        if (!section.IsDone()) return pts;
+        for (TopExp_Explorer ex(section.Shape(), TopAbs_EDGE); ex.More(); ex.Next()) {
+            try {
+                BRepAdaptor_Curve c(TopoDS::Edge(ex.Current()));
+                const double f = c.FirstParameter();
+                const double l = c.LastParameter();
+                if (l <= f) continue;
+                GCPnts_UniformAbscissa discret(c, spacing, f, l);
+                if (!discret.IsDone() || discret.NbPoints() < 2) {
+                    pts.push_back(v3(c.Value(f)));
+                    pts.push_back(v3(c.Value(l)));
+                    continue;
+                }
+                for (int i = 1; i <= discret.NbPoints(); ++i)
+                    pts.push_back(v3(c.Value(discret.Parameter(i))));
+            } catch (const Standard_Failure&) {
+                continue;
+            }
+        }
+    } catch (const Standard_Failure&) {
+    }
+    return pts;
 }
 
 const TopoDS_Shape& occShape(const IShape& s) {

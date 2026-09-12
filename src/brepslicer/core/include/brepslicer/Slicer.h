@@ -26,6 +26,9 @@ void writeOpenLayerDxf(const SliceResult& result,
                        const std::vector<std::pair<double, int>>& unclosed_layers,
                        const std::string& dir);
 void writeSeedDxfFile(const SliceResult& result, const std::string& path);
+void writeOpenLayerSeedDxf(const SliceResult& result,
+                           const std::vector<std::pair<double, int>>& unclosed_layers,
+                           const std::string& dir);
 void writeSeedSummaryFile(const SliceResult& result, const std::string& path);
 
 VerifyReport verifySlice(const SliceResult& result);

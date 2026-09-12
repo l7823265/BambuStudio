@@ -23,6 +23,11 @@ Layer assembleLayer(double z,
                     const SliceOptions& opt,
                     AssembleStats& stats);
 
+// After per-solid assemble: drop cross-solid duplicate loops, then nest/orient all
+// closed contours together (overlay / containment across solids).
+void reassembleCrossSolidContours(std::vector<Contour>& contours, const SliceFrame& frame,
+                                  const SliceOptions& opt, AssembleStats& stats);
+
 double contourSignedArea(const Contour& c, const SliceFrame& frame);
 Vec3 contourStart(const Contour& c);
 Vec3 contourEnd(const Contour& c);

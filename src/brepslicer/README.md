@@ -29,6 +29,7 @@ https://github.com/l7823265/BambuStudio/tree/feature/brepslicer-step-integration
 
 | Path | Role |
 |------|------|
-| `src/brepslicer/core/` | Independent BrepSlicer L2 sources |
+| `src/brepslicer/core/` | Vendored BrepSlicer L2-v6 sources |
+| `integrate-l2-v6.bat` | Re-sync from `../BrepSlicer-core-L2-v6` |
 | `src/libslic3r/BrepSlice.*` | Studio adapter (transform, units, ExPolygons) |
 | `src/brepslicer/CMakeLists.txt` | Static `brepslicer` lib linked into `libslic3r` |

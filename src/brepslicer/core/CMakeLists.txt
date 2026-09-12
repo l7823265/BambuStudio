@@ -32,6 +32,7 @@ add_library(brepslicer_algo STATIC
     src/io/DxfWriter.cpp
     src/geom/GeomUtil.cpp
     src/topo/FaceIndex.cpp
+    src/topo/SolidAdjacency.cpp
     src/intersect/QuadricPlane.cpp
     src/intersect/AnalyticIntersect.cpp
     src/intersect/BSplineFit.cpp
@@ -55,6 +56,7 @@ add_library(brepslicer_occ STATIC
     src/occ/OccBuilder.cpp
     src/occ/OccSectionRef.cpp
     src/occ/OccStrategy.cpp
+    src/occ/OccTopology.cpp
 )
 target_include_directories(brepslicer_occ
     PUBLIC

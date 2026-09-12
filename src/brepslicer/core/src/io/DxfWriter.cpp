@@ -174,23 +174,46 @@ void writeEntities(std::ostream& os, const SliceResult& result) {
                 }
 
                 if (s.type == SegmentType::Ellipse && s.radius > 0) {
-                    const Vec2 ctr = xy(s.center);
-                    const Vec2 maj = xy(s.center + s.major_axis * s.radius);
-                    code(os, 0, "ELLIPSE");
-                    code(os, 8, clayer);
-                    code(os, 62, color);
-                    code(os, 10, ctr.x);
-                    code(os, 20, ctr.y);
-                    code(os, 30, z);
-                    code(os, 11, maj.x - ctr.x);
-                    code(os, 21, maj.y - ctr.y);
-                    code(os, 31, 0.0);
-                    code(os, 40, (s.radius > 0) ? (s.radius_b / s.radius) : 1.0);
-                    double p0 = s.start_angle;
-                    double p1 = s.start_angle + s.sweep;
-                    if (s.sweep < 0) std::swap(p0, p1);
-                    code(os, 41, p0);
-                    code(os, 42, p1);
+                    // Tessellate elliptical arcs as 3D LINE chains (explicit Z), not
+                    // ELLIPSE / LWPOLYLINE:
+                    // - FreeCAD C++ importer ignores ELLIPSE start/end → full oval
+                    // - FreeCAD often ignores LWPOLYLINE elevation (38) → arcs on z=0
+                    // - HyperMesh drops ELLIPSE; LINE XYZ works in FreeCAD / Midas / HM
+                    Vec3 maj = s.major_axis;
+                    const double majLen = length(maj);
+                    if (majLen > 1e-30) maj = maj * (1.0 / majLen);
+                    Vec3 minv = cross(s.normal, maj);
+                    const double minLen = length(minv);
+                    if (minLen > 1e-30) minv = minv * (1.0 / minLen);
+                    const bool full = std::abs(std::abs(s.sweep) - kTwoPi) <= 1e-8;
+                    const int nSamp =
+                        full ? 64
+                             : std::max(8, static_cast<int>(std::ceil(std::abs(s.sweep) * 48.0 /
+                                                                      kPi)));
+                    auto ellPt = [&](double t) -> Vec2 {
+                        const Vec3 p = s.center + maj * (s.radius * std::cos(t)) +
+                                       minv * (s.radius_b * std::sin(t));
+                        return xy(p);
+                    };
+                    for (int i = 0; i < nSamp; ++i) {
+                        const double t0 =
+                            s.start_angle +
+                            s.sweep * (static_cast<double>(i) / static_cast<double>(nSamp));
+                        const double t1 =
+                            s.start_angle +
+                            s.sweep * (static_cast<double>(i + 1) / static_cast<double>(nSamp));
+                        const Vec2 p0 = ellPt(t0);
+                        const Vec2 p1 = ellPt(t1);
+                        code(os, 0, "LINE");
+                        code(os, 8, clayer);
+                        code(os, 62, color);
+                        code(os, 10, p0.x);
+                        code(os, 20, p0.y);
+                        code(os, 30, z);
+                        code(os, 11, p1.x);
+                        code(os, 21, p1.y);
+                        code(os, 31, z);
+                    }
                     continue;
                 }
 
@@ -373,45 +396,107 @@ void writeSeedChain(std::ostream& os, const std::string& lay, int color, double 
     }
 }
 
-void writeSeedEntities(std::ostream& os, const SliceResult& result) {
-    const SliceFrame frame = makeSliceFrame(result.normal);
-    for (size_t li = 0; li < result.seed_layers.size(); ++li) {
-        const SeedLayer& sl = result.seed_layers[li];
-        const std::string base = seedSliceLayerName(li, sl.z);
-        const double z = sl.z;
+// Layer-name prefix: empty for single-slice files (short CAD layers); Z_####_z for combined.
+void writeSeedEntitiesOne(std::ostream& os, const SeedLayer& sl, size_t li,
+                          const std::string& base, const SliceFrame& frame) {
+    (void)li;
+    const double z = sl.z;
+    const std::string sep = base.empty() ? "" : "_";
 
-        for (SeedPointKind kind : {SeedPointKind::Raw, SeedPointKind::Dropped}) {
-            const std::string lay = base + seedPointLayerSuffix(kind);
-            const int color = seedPointColor(kind);
-            for (const SeedPoint& sp : sl.points) {
-                if (sp.kind != kind) continue;
-                writeSeedPoint(os, lay, color, z, sp.p, frame);
-            }
+    for (SeedPointKind kind : {SeedPointKind::Raw, SeedPointKind::Dropped}) {
+        const char* suf = seedPointLayerSuffix(kind);  // "_RAW" / "_DROP"
+        const std::string lay = base.empty() ? std::string(suf + 1) : (base + suf);
+        const int color = seedPointColor(kind);
+        for (const SeedPoint& sp : sl.points) {
+            if (sp.kind != kind) continue;
+            writeSeedPoint(os, lay, color, z, sp.p, frame);
         }
+    }
 
-        const std::string chain_raw = base + "_CHAIN_RAW";
-        for (const auto& ch : sl.seed_chains) writeSeedChain(os, chain_raw, 3, z, ch, frame);
+    const std::string chain_raw = base + sep + "CHAIN_RAW";
+    for (const auto& ch : sl.seed_chains) writeSeedChain(os, chain_raw, 3, z, ch, frame);
 
-        const std::string chain_kept = base + "_CHAIN_KEPT";
-        std::map<int, int> face_chain_idx;
-        for (size_t ci = 0; ci < sl.kept_chains.size(); ++ci) {
-            const auto& ch = sl.kept_chains[ci];
-            writeSeedChain(os, chain_kept, 5, z, ch, frame);
+    const std::string chain_kept = base + sep + "CHAIN_KEPT";
+    const std::string kept_all = base + sep + "KEPT";
+    std::map<int, int> face_chain_idx;
+    for (size_t ci = 0; ci < sl.kept_chains.size(); ++ci) {
+        const auto& ch = sl.kept_chains[ci];
+        writeSeedChain(os, chain_kept, 5, z, ch, frame);
 
-            const int face_id =
-                ci < sl.kept_chain_face_ids.size() ? sl.kept_chain_face_ids[ci] : -1;
-            if (face_id >= 0) {
-                const int local = face_chain_idx[face_id]++;
-                std::ostringstream kept_lay;
-                kept_lay << base << "_KEPT_F" << face_id << "_C" << local;
-                for (const Vec3& p : ch) writeSeedPoint(os, kept_lay.str(), 5, z, p, frame);
-            }
-            for (const Vec3& p : ch) writeSeedPoint(os, base + "_KEPT", 5, z, p, frame);
+        const int face_id =
+            ci < sl.kept_chain_face_ids.size() ? sl.kept_chain_face_ids[ci] : -1;
+        if (face_id >= 0) {
+            const int local = face_chain_idx[face_id]++;
+            std::ostringstream kept_lay;
+            kept_lay << base << sep << "KEPT_F" << face_id << "_C" << local;
+            for (const Vec3& p : ch) writeSeedPoint(os, kept_lay.str(), 5, z, p, frame);
         }
+        for (const Vec3& p : ch) writeSeedPoint(os, kept_all, 5, z, p, frame);
     }
 }
 
+void collectSeedLayerDefs(const SeedLayer& sl, const std::string& base,
+                          std::vector<std::pair<std::string, int>>& layer_defs) {
+    const std::string sep = base.empty() ? "" : "_";
+    layer_defs.push_back({base + (base.empty() ? "RAW" : "_RAW"), 3});
+    layer_defs.push_back({base + (base.empty() ? "KEPT" : "_KEPT"), 5});
+    layer_defs.push_back({base + (base.empty() ? "DROP" : "_DROP"), 1});
+    layer_defs.push_back({base + (base.empty() ? "CHAIN_RAW" : "_CHAIN_RAW"), 3});
+    layer_defs.push_back({base + (base.empty() ? "CHAIN_KEPT" : "_CHAIN_KEPT"), 5});
+    std::map<int, int> face_chain_idx;
+    for (size_t ci = 0; ci < sl.kept_chains.size(); ++ci) {
+        const int face_id =
+            ci < sl.kept_chain_face_ids.size() ? sl.kept_chain_face_ids[ci] : -1;
+        if (face_id < 0) continue;
+        const int local = face_chain_idx[face_id]++;
+        std::ostringstream kept_lay;
+        kept_lay << base << sep << "KEPT_F" << face_id << "_C" << local;
+        layer_defs.push_back({kept_lay.str(), 5});
+    }
+}
+
+void writeSeedDxfStreamOne(std::ostream& os, const SliceResult& meta, const SeedLayer& sl,
+                           size_t li, bool short_layers) {
+    os << std::setprecision(17);
+    auto addLayer = [&](const std::string& name, int color) {
+        code(os, 0, "LAYER");
+        code(os, 2, name);
+        code(os, 70, 0);
+        code(os, 62, color);
+        code(os, 6, "CONTINUOUS");
+    };
+
+    const std::string base = short_layers ? std::string() : seedSliceLayerName(li, sl.z);
+
+    code(os, 0, "SECTION");
+    code(os, 2, "HEADER");
+    code(os, 9, "$ACADVER");
+    code(os, 1, "AC1014");
+    code(os, 0, "ENDSEC");
+
+    code(os, 0, "SECTION");
+    code(os, 2, "TABLES");
+    std::vector<std::pair<std::string, int>> layer_defs;
+    layer_defs.push_back({"0", 7});
+    collectSeedLayerDefs(sl, base, layer_defs);
+
+    code(os, 0, "TABLE");
+    code(os, 2, "LAYER");
+    code(os, 70, static_cast<int>(layer_defs.size()));
+    for (const auto& [name, color] : layer_defs) addLayer(name, color);
+
+    code(os, 0, "ENDTAB");
+    code(os, 0, "ENDSEC");
+
+    code(os, 0, "SECTION");
+    code(os, 2, "ENTITIES");
+    writeSeedEntitiesOne(os, sl, li, base, makeSliceFrame(meta.normal));
+    code(os, 0, "ENDSEC");
+    code(os, 0, "EOF");
+}
+
 void writeSeedDxfStream(std::ostream& os, const SliceResult& result) {
+    // Combined multi-slice file (legacy): prefixed CAD layers per Z.
     os << std::setprecision(17);
     auto addLayer = [&](const std::string& name, int color) {
         code(os, 0, "LAYER");
@@ -433,22 +518,7 @@ void writeSeedDxfStream(std::ostream& os, const SliceResult& result) {
     layer_defs.push_back({"0", 7});
     for (size_t li = 0; li < result.seed_layers.size(); ++li) {
         const std::string base = seedSliceLayerName(li, result.seed_layers[li].z);
-        const SeedLayer& sl = result.seed_layers[li];
-        layer_defs.push_back({base + "_RAW", 3});
-        layer_defs.push_back({base + "_KEPT", 5});
-        layer_defs.push_back({base + "_DROP", 1});
-        layer_defs.push_back({base + "_CHAIN_RAW", 3});
-        layer_defs.push_back({base + "_CHAIN_KEPT", 5});
-        std::map<int, int> face_chain_idx;
-        for (size_t ci = 0; ci < sl.kept_chains.size(); ++ci) {
-            const int face_id =
-                ci < sl.kept_chain_face_ids.size() ? sl.kept_chain_face_ids[ci] : -1;
-            if (face_id < 0) continue;
-            const int local = face_chain_idx[face_id]++;
-            std::ostringstream kept_lay;
-            kept_lay << base << "_KEPT_F" << face_id << "_C" << local;
-            layer_defs.push_back({kept_lay.str(), 5});
-        }
+        collectSeedLayerDefs(result.seed_layers[li], base, layer_defs);
     }
 
     code(os, 0, "TABLE");
@@ -461,7 +531,11 @@ void writeSeedDxfStream(std::ostream& os, const SliceResult& result) {
 
     code(os, 0, "SECTION");
     code(os, 2, "ENTITIES");
-    writeSeedEntities(os, result);
+    const SliceFrame frame = makeSliceFrame(result.normal);
+    for (size_t li = 0; li < result.seed_layers.size(); ++li) {
+        const std::string base = seedSliceLayerName(li, result.seed_layers[li].z);
+        writeSeedEntitiesOne(os, result.seed_layers[li], li, base, frame);
+    }
     code(os, 0, "ENDSEC");
     code(os, 0, "EOF");
 }
@@ -469,9 +543,48 @@ void writeSeedDxfStream(std::ostream& os, const SliceResult& result) {
 }  // namespace
 
 void writeSeedDxfFile(const SliceResult& result, const std::string& path) {
+    // Directory (or non-.dxf path) → one seed_XXXX.dxf per slice (fast to open).
+    // Path ending in .dxf → single combined file (legacy).
+    if (!endsWithDxf(path)) {
+        ensureDir(path);
+        for (size_t i = 0; i < result.seed_layers.size(); ++i) {
+            std::ostringstream name;
+            name << path << "/seed_" << std::setw(4) << std::setfill('0') << i << ".dxf";
+            std::ofstream f(name.str());
+            if (!f) throw std::runtime_error("cannot write " + name.str());
+            writeSeedDxfStreamOne(f, result, result.seed_layers[i], i, /*short_layers=*/true);
+        }
+        return;
+    }
     std::ofstream f(path);
     if (!f) throw std::runtime_error("cannot write " + path);
     writeSeedDxfStream(f, result);
+}
+
+void writeOpenLayerSeedDxf(const SliceResult& result,
+                           const std::vector<std::pair<double, int>>& unclosed_layers,
+                           const std::string& dir) {
+    ensureDir(dir);
+    if (unclosed_layers.empty() || result.seed_layers.empty()) return;
+    const double ztol = std::max(result.tolerance, 1e-6);
+    for (size_t li = 0; li < result.seed_layers.size(); ++li) {
+        const SeedLayer& sl = result.seed_layers[li];
+        int open_count = 0;
+        for (const auto& entry : unclosed_layers) {
+            if (std::abs(entry.first - sl.z) <= ztol) {
+                open_count = entry.second;
+                break;
+            }
+        }
+        if (open_count <= 0) continue;
+
+        std::ostringstream name;
+        name << dir << "/seed_" << std::setw(4) << std::setfill('0') << li << "_z" << std::fixed
+             << std::setprecision(4) << sl.z << "_n" << open_count << ".dxf";
+        std::ofstream f(name.str());
+        if (!f) throw std::runtime_error("cannot write " + name.str());
+        writeSeedDxfStreamOne(f, result, sl, li, /*short_layers=*/true);
+    }
 }
 
 void writeSeedSummaryFile(const SliceResult& result, const std::string& path) {

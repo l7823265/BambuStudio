@@ -4,8 +4,8 @@
 #include <intersect/BSplineFit.h>
 #include <occ/OccShape.h>
 
-#include <BRepAlgoAPI_Section.hxx>
 #include <BRepAdaptor_Curve.hxx>
+#include <BRepAlgoAPI_Section.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepGProp.hxx>
 #include <GCPnts_UniformAbscissa.hxx>
@@ -101,6 +101,21 @@ void clipBSplineBySplitting(const RawSegment& rs, const std::vector<Vec3>& secti
         return;
     }
     const Segment& s = rs.geom;
+    const Vec3 p0 = s.ctrl_pts.empty() ? s.start : s.ctrl_pts.front();
+    const Vec3 p1 = s.ctrl_pts.empty() ? s.end : s.ctrl_pts.back();
+
+    // Open UVMatch tip connectors: both ends already on edge∩plane (and on section),
+    // but the fitted mid can sit slightly off the OCC wire and get shredded into
+    // 0.03 mm stubs — then assemble cannot join line↔bspline (R20test open layers).
+    if (!rs.closed_loop) {
+        const bool ends_on = distToPointCloud(section_pts, p0) <= snap &&
+                             distToPointCloud(section_pts, p1) <= snap;
+        if (ends_on) {
+            out.push_back(rs);
+            return;
+        }
+    }
+
     constexpr int n = 33;
     std::vector<char> inlier(static_cast<size_t>(n), 0);
     int n_in = 0;

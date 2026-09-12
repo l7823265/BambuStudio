@@ -100,6 +100,18 @@ void writeLayerSvg(const Layer& layer, const Vec3& normal, const std::string& pa
                 const double sweepFlag = (s.sweep < 0) ? 0 : 1;
                 f << " A " << s.radius << " " << s.radius << " 0 " << large << " " << sweepFlag
                   << " " << pe.x << " " << pe.y;
+            } else if (s.type == SegmentType::Ellipse) {
+                const Vec3 maj = normalized(s.major_axis);
+                const Vec3 minv = cross(s.normal, maj);
+                const int n = std::max(8, static_cast<int>(std::ceil(std::abs(s.sweep) * 32.0 / kPi)));
+                for (int i = 1; i <= n; ++i) {
+                    const double t =
+                        s.start_angle + s.sweep * (static_cast<double>(i) / static_cast<double>(n));
+                    const Vec3 p = s.center + maj * (s.radius * std::cos(t)) +
+                                   minv * (s.radius_b * std::sin(t));
+                    const Vec2 q = xy(p);
+                    f << " L " << q.x << " " << q.y;
+                }
             } else if (s.type == SegmentType::BSpline) {
                 std::vector<Vec3> smp;
                 bsplineSample(s, 48, smp);

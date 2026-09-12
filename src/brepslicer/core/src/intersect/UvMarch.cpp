@@ -232,6 +232,9 @@ RawSegment toSegment(const FaceRecord& iface, const IFace& face, const Plane& pl
     rs.solid_id = iface.solid_id;
     rs.shell_id = iface.shell_id;
     rs.face_id = iface.face_id;
+    rs.chain_idx = 0;
+    rs.geom.face_id = iface.face_id;
+    rs.geom.chain_idx = 0;
     if (tr.size() == 1) {
         rs.degenerate = true;
         rs.degen_event = "tangent_point";
@@ -325,7 +328,26 @@ std::vector<RawSegment> intersectNurbsFaceWithPlane(const FaceRecord& iface, con
         if (face.invertUV(p, u, v, opt.tolerance)) addSeed(u, v, true);
     }
 
-    const int N = 32;
+    // OCC face∩plane samples (same idea as BRepAlgoAPI_Section on the trimmed face).
+    // Critical for narrow trim ribbons that a coarse UV grid misses.
+    {
+        const double spacing = std::max(0.25, 0.02 * diag);
+        const std::vector<Vec3> occ_hits = face.samplePlaneSection(pln, spacing);
+        for (const Vec3& p : occ_hits) {
+            double u = 0, v = 0;
+            if (!face.invertUV(p, u, v, opt.tolerance)) continue;
+            addSeed(u, v, false);
+        }
+    }
+
+    // Adaptive UV grid: denser when the face is a thin slab / few edge hits (narrow trim).
+    int N = 32;
+    if (boundary3d.size() <= 4) N = 48;
+    if (bb.valid) {
+        const double thin = std::min({bb.xmax - bb.xmin, bb.ymax - bb.ymin, bb.zmax - bb.zmin});
+        const double thick = std::max({bb.xmax - bb.xmin, bb.ymax - bb.ymin, bb.zmax - bb.zmin});
+        if (thin > 1e-6 && thin < 0.25 * thick) N = std::max(N, 64);
+    }
     std::vector<double> F((N + 1) * (N + 1));
     auto at = [&](int i, int j) -> double& { return F[i * (N + 1) + j]; };
     for (int i = 0; i <= N; ++i) {
@@ -367,6 +389,49 @@ std::vector<RawSegment> intersectNurbsFaceWithPlane(const FaceRecord& iface, con
         for (int j = 0; j <= N; ++j) {
             if (i < N) consider(i, j, i + 1, j);
             if (j < N) consider(i, j, i, j + 1);
+        }
+    }
+
+    // Extra zero-cross probes on isos through inverted boundary UVs (narrow ribbon).
+    for (const Vec3& p : boundary3d) {
+        double ub = 0, vb = 0;
+        if (!face.invertUV(p, ub, vb, opt.tolerance)) continue;
+        if (dom.periodic_u || dom.periodic_v) wrapUV(dom, ub, vb);
+        constexpr int kProbe = 48;
+        for (int axis = 0; axis < 2; ++axis) {
+            for (int i = 0; i < kProbe; ++i) {
+                const double t0 = static_cast<double>(i) / kProbe;
+                const double t1 = static_cast<double>(i + 1) / kProbe;
+                double u0, v0, u1, v1;
+                if (axis == 0) {
+                    u0 = dom.umin + du * t0;
+                    u1 = dom.umin + du * t1;
+                    v0 = v1 = vb;
+                } else {
+                    v0 = dom.vmin + dv * t0;
+                    v1 = dom.vmin + dv * t1;
+                    u0 = u1 = ub;
+                }
+                const double f0 = fval(face, pln, u0, v0);
+                const double f1 = fval(face, pln, u1, v1);
+                if (f0 * f1 > 0.0 && std::abs(f0) > opt.geom_tolerance &&
+                    std::abs(f1) > opt.geom_tolerance)
+                    continue;
+                double lo = 0, hi = 1, flo = f0;
+                for (int it = 0; it < 20; ++it) {
+                    const double m = 0.5 * (lo + hi);
+                    const double um = u0 + m * (u1 - u0);
+                    const double vm = v0 + m * (v1 - v0);
+                    const double fm = fval(face, pln, um, vm);
+                    if (flo * fm <= 0.0) hi = m;
+                    else {
+                        lo = m;
+                        flo = fm;
+                    }
+                }
+                const double m = 0.5 * (lo + hi);
+                addSeed(u0 + m * (u1 - u0), v0 + m * (v1 - v0), false);
+            }
         }
     }
 

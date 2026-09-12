@@ -13,6 +13,7 @@ struct RawSegment {
     int solid_id = -1;
     int shell_id = -1;
     int face_id = -1;
+    int chain_idx = -1;  // per-face kept-chain location (see Segment::chain_idx)
     bool coplanar = false;
     bool closed_loop = false;
     bool degenerate = false;

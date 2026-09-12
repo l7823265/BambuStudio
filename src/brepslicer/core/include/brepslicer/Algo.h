@@ -7,6 +7,9 @@
 #include <string>
 #include <vector>
 
+// SolidAdjacency lives under src/topo; expose via relative include for kernel API.
+#include <topo/SolidAdjacency.h>
+
 namespace brepslicer {
 
 struct RawSegment;
@@ -16,6 +19,8 @@ public:
     virtual ~IBrepKernel() = default;
     virtual std::shared_ptr<IShape> readStep(const std::string& path) = 0;
     virtual std::vector<FaceRecord> exploreFaces(const IShape& shape) = 0;
+    // Edge↔face adjacency for ordered contour linking. Default: empty.
+    virtual SolidAdjacency buildSolidAdjacency(const std::vector<FaceRecord>& faces) const;
 };
 
 class IShapeBuilder {
@@ -43,9 +48,10 @@ public:
 class ISectionRef {
 public:
     virtual ~ISectionRef() = default;
+    // Optional reference only (slice_verify / compare_occ_section). Not required to slice.
     virtual double sectionLength(const IShape& shape, const Plane& plane) = 0;
-    // L2 B-splines only: keep portions near the OCCT section wire (split inliers).
-    // L1 line / arc / ellipse are not clipped against OCC Section.
+    // Optional legacy filter: L2 B-splines near the OCCT section wire. Off unless
+    // SliceOptions::use_occ_section_clip. Line / arc / ellipse are never clipped.
     virtual void clipSegmentsToSection(const IShape& shape, const Plane& plane,
                                        std::vector<RawSegment>& segs, double tol) = 0;
 };

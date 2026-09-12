@@ -14,6 +14,8 @@ struct Vec3 {
     double z = 0;
 };
 
+struct SolidAdjacency;  // defined in topo/SolidAdjacency.h
+
 enum class SegmentType {
     Line,
     Arc,
@@ -41,6 +43,12 @@ struct Segment {
     std::vector<Vec3> ctrl_pts;
     std::vector<double> weights;
     double fit_error = 0;
+
+    // Provenance for adjacency linking (optional; -1 = unknown).
+    int face_id = -1;
+    // Per-face seed-chain location index (0,1,…). Distinguishes F4@top from F4@bottom
+    // when the pocket cycle revisits the same face (F1→…→F4→F5→F4→…).
+    int chain_idx = -1;
 };
 
 struct Contour {
@@ -130,16 +138,23 @@ struct SliceOptions {
     double geom_tolerance = 1e-9;  // analytic equality (L1 circle)
     double angular_tolerance = 1e-10;
     NurbsMethod nurbs_method = NurbsMethod::Auto;
+    // Off by default: slice trusts face-trim / UVMatch. OCC BRepAlgoAPI_Section is
+    // only used when true (legacy B-spline clip) or by slice_verify (sectionLength).
+    bool use_occ_section_clip = false;
+    bool compare_occ_section = false;  // log our vs OCC perimeter per layer
     std::string svg_dir;           // directory: one SVG per layer
     std::string dxf_path;          // .dxf file, or directory of per-layer DXF
     std::string open_dxf_dir;      // debug: DXF for layers with open contour(s) only
-    std::string seed_dxf_path;     // debug: UVMatch seed points / chains
+    std::string seed_dxf_path;     // debug: UVMatch seeds — dir → seed_XXXX.dxf per layer; .dxf → one file
+    std::string seed_open_dxf_dir; // debug: seed DXF for open layers only
     // Per-layer UVMatch seed recorder (set by slicer during intersect).
     mutable SeedLayer* seed_out = nullptr;
     // Per-layer per-face seed counts (always set during slice).
     mutable std::vector<FaceSeedStats>* face_seed_stats = nullptr;
     // All faces hit by the current slice plane (for neighbor signed-distance clip).
     mutable const std::vector<const FaceRecord*>* plane_faces = nullptr;
+    // Solid edge↔face adjacency (built once per model). Enables ordered tip linking.
+    mutable const SolidAdjacency* solid_adjacency = nullptr;
     // Per-face chain/constraint audit lines (debug; set when --seed-dxf is used).
     mutable std::vector<std::string>* constraint_audit = nullptr;
     // Optional: called once per layer so hosts (BambuStudio) can cancel a long B-rep slice.

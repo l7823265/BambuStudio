@@ -39,6 +39,12 @@ public:
     // Preferred iso-parameter samples (e.g. unique NURBS knots). Empty → caller densifies.
     virtual void uvIsoSamples(std::vector<double>& /*u_samples*/,
                               std::vector<double>& /*v_samples*/) const {}
+    // Optional OCC face∩plane samples (empty if backend cannot section). Used to seed
+    // UVMarch on narrow trim faces when UVMatch only recovers tip stubs.
+    virtual std::vector<Vec3> samplePlaneSection(const Plane& /*pln*/,
+                                                 double /*spacing*/) const {
+        return {};
+    }
 };
 
 class ISolid : public IShape {

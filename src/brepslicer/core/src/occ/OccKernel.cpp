@@ -10,6 +10,7 @@
 #include <TopoDS_Shell.hxx>
 #include <TopoDS_Solid.hxx>
 
+#include <occ/OccTopology.h>
 #include <stdexcept>
 
 namespace brepslicer {
@@ -73,6 +74,10 @@ public:
             addFace(TopoDS::Face(fa.Current()), 0, 0);
         }
         return faces;
+    }
+
+    SolidAdjacency buildSolidAdjacency(const std::vector<FaceRecord>& faces) const override {
+        return brepslicer::buildSolidAdjacency(faces);
     }
 };
 
